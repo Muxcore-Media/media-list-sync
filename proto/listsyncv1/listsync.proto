@@ -1,0 +1,104 @@
+syntax = "proto3";
+package muxcore.listsync.v1;
+option go_package = "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1;listsyncv1";
+
+service ListSyncService {
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
+  rpc AddSource(AddSourceRequest) returns (AddSourceResponse);
+  rpc RemoveSource(RemoveSourceRequest) returns (RemoveSourceResponse);
+  rpc SyncNow(SyncNowRequest) returns (SyncNowResponse);
+  rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
+  rpc GetItems(GetItemsRequest) returns (GetItemsResponse);
+}
+
+message ListSource {
+  string id = 1;
+  string name = 2;
+  string type = 3;         // "trakt", "imdb"
+  bool enabled = 4;
+  string username = 5;
+  string client_id = 6;
+  string list_url = 7;     // for IMDb
+  int32 sync_interval_minutes = 8;
+  string last_synced = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+
+message ListSourcesRequest {}
+message ListSourcesResponse { repeated ListSource sources = 1; }
+
+message AddSourceRequest {
+  string name = 1;
+  string type = 2;
+  string username = 3;
+  string client_id = 4;
+  string list_url = 5;
+  int32 sync_interval_minutes = 6;
+}
+
+message AddSourceResponse { ListSource source = 1; }
+
+message RemoveSourceRequest { string id = 1; }
+message RemoveSourceResponse {}
+
+message SyncNowRequest {}
+message SyncNowResponse {
+  int32 items_found = 1;
+  int32 items_new = 2;
+}
+
+message GetHistoryRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message GetHistoryResponse {
+  repeated SyncLogEntry entries = 1;
+  int32 total = 2;
+}
+
+message SyncLogEntry {
+  string id = 1;
+  string source_id = 2;
+  string source_name = 3;
+  string status = 4;
+  int32 items_found = 5;
+  int32 items_new = 6;
+  string error = 7;
+  string started_at = 8;
+  string completed_at = 9;
+}
+
+message GetItemsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string source_id = 3;
+  string media_type = 4;   // "movie", "tv"
+  bool matched_only = 5;
+}
+
+message GetItemsResponse {
+  repeated SyncItem items = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message SyncItem {
+  string id = 1;
+  string source_id = 2;
+  string external_id = 3;     // Trakt or IMDb ID
+  int32 tmdb_id = 4;
+  string imdb_id = 5;
+  string media_type = 6;      // "movie", "tv"
+  string title = 7;
+  int32 year = 8;
+  int32 season_number = 9;
+  int32 episode_number = 10;
+  string action = 11;          // "watchlist", "collection"
+  string status = 12;          // "pending", "matched", "added", "skipped"
+  string matched_item_id = 13; // ID in library module
+  string created_at = 14;
+  string updated_at = 15;
+}

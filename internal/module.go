@@ -21,6 +21,9 @@ import (
 
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
+	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
+	metadatav1 "github.com/Muxcore-Media/metadata-tmdb/proto/metadatav1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/core/sdk/go/client"
@@ -43,6 +46,14 @@ type Module struct {
 
 	automationConn   *grpc.ClientConn
 	automationClient automationv1.AutomationServiceClient
+
+	moviesConn   *grpc.ClientConn
+	moviesClient mgmntv1.MovieManagementServiceClient
+	tvConn       *grpc.ClientConn
+	tvClient     tvmgmtv1.TvManagementServiceClient
+
+	metadataConn   *grpc.ClientConn
+	metadataClient metadatav1.MetadataServiceClient
 }
 
 type Config struct {
@@ -77,13 +88,21 @@ func NewModule(cfg Config) *Module {
 
 func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
-		ID:             m.id,
-		Name:           "Media List Sync",
-		Version:        "0.1.0",
-		Roles:          []string{"listsync"},
-		Description:    "Sync media watchlists and collections from Trakt, IMDb, and other providers",
-		Author:         "MuxCore",
-		Capabilities:   []string{"media.listsync"},
+		ID:          m.id,
+		Name:        "Media List Sync",
+		Version:     "0.1.0",
+		Roles:       []string{"listsync", "importlist"},
+		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
+		Author:      "MuxCore",
+		Capabilities: []string{
+			"media.listsync",
+			"importlist.trakt",
+			"importlist.imdb",
+			"importlist.plex",
+			"importlist.jellyfin",
+			"importlist.radarr",
+			"importlist.sonarr",
+		},
 		MinCoreVersion: "0.4.0",
 		HTTPAddr:       m.grpcAddr,
 	}
@@ -163,6 +182,15 @@ func (m *Module) Init(ctx context.Context) error {
 		return fmt.Errorf("create sync_log: %w", err)
 	}
 
+	for _, col := range []struct{ name, def string }{
+		{"base_url", "TEXT DEFAULT ''"},
+		{"api_key", "TEXT DEFAULT ''"},
+		{"quality_profile_id", "TEXT DEFAULT ''"},
+		{"root_folder_path", "TEXT DEFAULT ''"},
+	} {
+		_, _ = db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE list_sources ADD COLUMN %s %s`, col.name, col.def))
+	}
+
 	m.mu.Lock()
 	m.db = db
 	m.mu.Unlock()
@@ -199,6 +227,15 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.automationConn != nil {
 		m.automationConn.Close()
+	}
+	if m.moviesConn != nil {
+		m.moviesConn.Close()
+	}
+	if m.tvConn != nil {
+		m.tvConn.Close()
+	}
+	if m.metadataConn != nil {
+		m.metadataConn.Close()
 	}
 	if m.mc != nil {
 		m.mc.Close()
@@ -249,22 +286,9 @@ func (m *Module) ensureAutomation(ctx context.Context) error {
 		return nil
 	}
 	m.mu.RUnlock()
-	if m.mc == nil {
-		return fmt.Errorf("not connected to core")
-	}
-	modules, err := m.mc.Discovery.FindByCapability(ctx, "media.automation")
+	addr, err := m.findCapabilityAddr(ctx, "media.automation")
 	if err != nil {
-		return fmt.Errorf("discover automation: %w", err)
-	}
-	var addr string
-	for _, mod := range modules {
-		if mod.HttpAddr != "" {
-			addr = mod.HttpAddr
-			break
-		}
-	}
-	if addr == "" {
-		return fmt.Errorf("no automation module found")
+		return err
 	}
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -275,6 +299,91 @@ func (m *Module) ensureAutomation(ctx context.Context) error {
 	m.automationClient = automationv1.NewAutomationServiceClient(conn)
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Module) ensureMovies(ctx context.Context) error {
+	m.mu.RLock()
+	if m.moviesClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+	addr, err := m.findCapabilityAddr(ctx, "media.library.movies")
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial movies: %w", err)
+	}
+	m.mu.Lock()
+	m.moviesConn = conn
+	m.moviesClient = mgmntv1.NewMovieManagementServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) ensureTV(ctx context.Context) error {
+	m.mu.RLock()
+	if m.tvClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+	addr, err := m.findCapabilityAddr(ctx, "media.library.tv")
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial tvshows: %w", err)
+	}
+	m.mu.Lock()
+	m.tvConn = conn
+	m.tvClient = tvmgmtv1.NewTvManagementServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) ensureMetadata(ctx context.Context) error {
+	m.mu.RLock()
+	if m.metadataClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+	addr, err := m.findCapabilityAddr(ctx, "metadata")
+	if err != nil {
+		addr, err = m.findCapabilityAddr(ctx, "metadata.tmdb")
+		if err != nil {
+			return err
+		}
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial metadata: %w", err)
+	}
+	m.mu.Lock()
+	m.metadataConn = conn
+	m.metadataClient = metadatav1.NewMetadataServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) findCapabilityAddr(ctx context.Context, capability string) (string, error) {
+	if m.mc == nil {
+		return "", fmt.Errorf("not connected to core")
+	}
+	modules, err := m.mc.Discovery.FindByCapability(ctx, capability)
+	if err != nil {
+		return "", fmt.Errorf("discover %s: %w", capability, err)
+	}
+	for _, mod := range modules {
+		if mod.HttpAddr != "" {
+			return mod.HttpAddr, nil
+		}
+	}
+	return "", fmt.Errorf("no %s module found", capability)
 }
 
 // ── Sync Loop ──────────────────────────────────────────────────
@@ -291,7 +400,11 @@ func (m *Module) syncLoop() {
 	}
 }
 
-func (m *Module) syncAll() {
+func (m *Module) syncAll() (found, newItems int) {
+	return m.syncAllForced(false)
+}
+
+func (m *Module) syncAllForced(force bool) (found, newItems int) {
 	m.mu.RLock()
 	sources := m.loadSources()
 	m.mu.RUnlock()
@@ -300,7 +413,7 @@ func (m *Module) syncAll() {
 		if !s.GetEnabled() {
 			continue
 		}
-		if s.GetLastSynced() != "" {
+		if !force && s.GetLastSynced() != "" {
 			lastSync, err := time.Parse(time.RFC3339, s.GetLastSynced())
 			if err == nil {
 				interval := time.Duration(s.GetSyncIntervalMinutes()) * time.Minute
@@ -312,11 +425,14 @@ func (m *Module) syncAll() {
 				}
 			}
 		}
-		m.syncSource(s)
+		f, n := m.syncSource(s)
+		found += f
+		newItems += n
 	}
+	return found, newItems
 }
 
-func (m *Module) syncSource(source *listsyncv1.ListSource) {
+func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int) {
 	logID := fmt.Sprintf("log_%d", time.Now().UnixNano())
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -333,13 +449,21 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) {
 		items, err = m.fetchTrakt(source)
 	case "imdb":
 		items, err = m.fetchIMDb(source)
+	case "plex":
+		items, err = m.fetchPlex(source)
+	case "jellyfin":
+		items, err = m.fetchJellyfin(source)
+	case "radarr":
+		items, err = m.fetchRadarr(source)
+	case "sonarr":
+		items, err = m.fetchSonarr(source)
 	default:
 		err = fmt.Errorf("unknown source type: %s", source.GetType())
 	}
 
-	newCount := 0
 	if err == nil {
 		newCount = m.storeItems(source.GetId(), items)
+		found = len(items)
 	}
 
 	completed := time.Now().UTC().Format(time.RFC3339)
@@ -353,15 +477,249 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) {
 
 	m.mu.Lock()
 	m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, error = ?, completed_at = ? WHERE id = ?`,
-		status, len(items), newCount, errStr, completed, logID)
+		status, found, newCount, errStr, completed, logID)
 	m.db.Exec(`UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
 	m.mu.Unlock()
 
 	if err == nil && len(items) > 0 {
-		m.queueWithAutomation(items)
+		m.addItemsToLibrary(source, items)
 	}
 
-	slog.Info("sync completed", "source", source.GetName(), "found", len(items), "new", newCount)
+	slog.Info("sync completed", "source", source.GetName(), "found", found, "new", newCount)
+	return found, newCount
+}
+
+func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncItem) {
+	sourceID := source.GetId()
+	var fallback []syncItem
+	for _, item := range items {
+		if m.syncItemStatus(sourceID, item.ExternalID) == "added" {
+			continue
+		}
+		if item.TMDBID <= 0 {
+			if resolved, ok := m.resolveTMDB(item); ok {
+				item = resolved
+			}
+		}
+		if item.TMDBID <= 0 {
+			fallback = append(fallback, item)
+			continue
+		}
+		matchedID, err := m.addLibraryItem(source, item)
+		if err != nil {
+			slog.Debug("library add failed", "title", item.Title, "error", err)
+			fallback = append(fallback, item)
+			continue
+		}
+		m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
+	}
+	if len(fallback) > 0 {
+		m.queueWithAutomation(fallback)
+	}
+}
+
+func (m *Module) syncItemStatus(sourceID, externalID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.db == nil {
+		return ""
+	}
+	var status string
+	_ = m.db.QueryRow(
+		`SELECT status FROM sync_items WHERE source_id = ? AND external_id = ?`,
+		sourceID, externalID,
+	).Scan(&status)
+	return status
+}
+
+func (m *Module) resolveTMDB(item syncItem) (syncItem, bool) {
+	if item.IMDBID == "" {
+		return item, false
+	}
+	ctx := context.Background()
+	if err := m.ensureMetadata(ctx); err != nil {
+		slog.Debug("metadata unavailable for resolve", "error", err)
+		return item, false
+	}
+	m.mu.RLock()
+	mc := m.metadataClient
+	m.mu.RUnlock()
+
+	resp, err := mc.FindByExternalID(ctx, &metadatav1.FindByExternalIDRequest{
+		ExternalId:     item.IMDBID,
+		ExternalSource: "imdb_id",
+	})
+	if err != nil || len(resp.GetResults()) == 0 {
+		if item.Title != "" {
+			return m.resolveViaSearch(item)
+		}
+		return item, false
+	}
+
+	wantMovie := item.MediaType == "movie" || item.MediaType == ""
+	wantTV := item.MediaType == "tv"
+	var pick *metadatav1.SearchResult
+	for _, r := range resp.GetResults() {
+		switch r.GetMediaType() {
+		case metadatav1.MediaType_MEDIA_TYPE_MOVIE:
+			if wantMovie {
+				pick = r
+			}
+		case metadatav1.MediaType_MEDIA_TYPE_TV:
+			if wantTV {
+				pick = r
+			}
+		}
+		if pick != nil {
+			break
+		}
+	}
+	if pick == nil {
+		pick = resp.GetResults()[0]
+	}
+	item.TMDBID = int(pick.GetId())
+	if item.Title == "" {
+		if pick.GetTitle() != "" {
+			item.Title = pick.GetTitle()
+		} else {
+			item.Title = pick.GetName()
+		}
+	}
+	if item.Year == 0 {
+		item.Year = yearFromDate(pick.GetReleaseDate())
+		if item.Year == 0 {
+			item.Year = yearFromDate(pick.GetFirstAirDate())
+		}
+	}
+	if item.MediaType == "" {
+		if pick.GetMediaType() == metadatav1.MediaType_MEDIA_TYPE_TV {
+			item.MediaType = "tv"
+		} else {
+			item.MediaType = "movie"
+		}
+	}
+	m.updateSyncItemTMDB(item)
+	return item, true
+}
+
+func (m *Module) resolveViaSearch(item syncItem) (syncItem, bool) {
+	ctx := context.Background()
+	m.mu.RLock()
+	mc := m.metadataClient
+	m.mu.RUnlock()
+	if mc == nil {
+		return item, false
+	}
+	mediaType := metadatav1.MediaType_MEDIA_TYPE_UNSPECIFIED
+	switch item.MediaType {
+	case "movie":
+		mediaType = metadatav1.MediaType_MEDIA_TYPE_MOVIE
+	case "tv":
+		mediaType = metadatav1.MediaType_MEDIA_TYPE_TV
+	}
+	resp, err := mc.Search(ctx, &metadatav1.SearchRequest{
+		Query: item.Title,
+		Type:  mediaType,
+		Page:  1,
+	})
+	if err != nil || len(resp.GetResults()) == 0 {
+		return item, false
+	}
+	pick := resp.GetResults()[0]
+	if item.Year > 0 {
+		for _, r := range resp.GetResults() {
+			y := yearFromDate(r.GetReleaseDate())
+			if y == 0 {
+				y = yearFromDate(r.GetFirstAirDate())
+			}
+			if y == item.Year {
+				pick = r
+				break
+			}
+		}
+	}
+	item.TMDBID = int(pick.GetId())
+	m.updateSyncItemTMDB(item)
+	return item, true
+}
+
+func yearFromDate(s string) int {
+	if len(s) < 4 {
+		return 0
+	}
+	var y int
+	fmt.Sscanf(s[:4], "%d", &y)
+	return y
+}
+
+func (m *Module) updateSyncItemTMDB(item syncItem) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	_, _ = m.db.Exec(
+		`UPDATE sync_items SET tmdb_id = ?, title = ?, year = ?, media_type = ?, updated_at = ? WHERE external_id = ?`,
+		item.TMDBID, item.Title, item.Year, item.MediaType, now, item.ExternalID,
+	)
+}
+
+func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (string, error) {
+	ctx := context.Background()
+	switch item.MediaType {
+	case "movie":
+		if err := m.ensureMovies(ctx); err != nil {
+			return "", err
+		}
+		m.mu.RLock()
+		mc := m.moviesClient
+		m.mu.RUnlock()
+		resp, err := mc.AddMovie(ctx, &mgmntv1.AddMovieRequest{
+			TmdbId:           int32(item.TMDBID),
+			Title:            item.Title,
+			Year:             int32(item.Year),
+			QualityProfileId: source.GetQualityProfileId(),
+			RootFolderPath:   source.GetRootFolderPath(),
+		})
+		if err != nil {
+			return "", err
+		}
+		return resp.GetMovieId(), nil
+	case "tv":
+		if err := m.ensureTV(ctx); err != nil {
+			return "", err
+		}
+		m.mu.RLock()
+		tc := m.tvClient
+		m.mu.RUnlock()
+		resp, err := tc.AddTVShow(ctx, &tvmgmtv1.AddTVShowRequest{
+			TmdbId:           int32(item.TMDBID),
+			Name:             item.Title,
+			Year:             int32(item.Year),
+			QualityProfileId: source.GetQualityProfileId(),
+			RootFolderPath:   source.GetRootFolderPath(),
+		})
+		if err != nil {
+			return "", err
+		}
+		return resp.GetSeriesId(), nil
+	default:
+		return "", fmt.Errorf("unsupported media type %q", item.MediaType)
+	}
+}
+
+func (m *Module) markSyncItemAdded(sourceID, externalID, matchedID string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	_, _ = m.db.Exec(
+		`UPDATE sync_items SET status = 'added', matched_item_id = ?, updated_at = ? WHERE source_id = ? AND external_id = ?`,
+		matchedID, now, sourceID, externalID,
+	)
 }
 
 func (m *Module) queueWithAutomation(items []syncItem) {
@@ -409,8 +767,9 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 		interval = 1440
 	}
 
-	_, err := m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
-		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval, now, now)
+	_, err := m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
+		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), req.GetRootFolderPath(), now, now)
 	if err != nil {
 		return nil, fmt.Errorf("add source: %w", err)
 	}
@@ -427,8 +786,8 @@ func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceR
 }
 
 func (m *Module) SyncNow(ctx context.Context, req *listsyncv1.SyncNowRequest) (*listsyncv1.SyncNowResponse, error) {
-	m.syncAll()
-	return &listsyncv1.SyncNowResponse{}, nil
+	found, newItems := m.syncAllForced(true)
+	return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems)}, nil
 }
 
 func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryRequest) (*listsyncv1.GetHistoryResponse, error) {
@@ -531,24 +890,30 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 
 // ── Trakt Integration ──────────────────────────────────────────
 
+type traktIDs struct {
+	Trakt int    `json:"trakt"`
+	IMDb  string `json:"imdb"`
+	TMDB  int    `json:"tmdb"`
+}
+
 type traktMovie struct {
-	IDs struct {
-		Trakt int    `json:"trakt"`
-		IMDb  string `json:"imdb"`
-		TMDB  int    `json:"tmdb"`
-	} `json:"ids"`
-	Title string `json:"title"`
-	Year  int    `json:"year"`
+	IDs   traktIDs `json:"ids"`
+	Title string   `json:"title"`
+	Year  int      `json:"year"`
 }
 
 type traktShow struct {
-	IDs struct {
-		Trakt int    `json:"trakt"`
-		IMDb  string `json:"imdb"`
-		TMDB  int    `json:"tmdb"`
-	} `json:"ids"`
-	Title string `json:"title"`
-	Year  int    `json:"year"`
+	IDs   traktIDs `json:"ids"`
+	Title string   `json:"title"`
+	Year  int      `json:"year"`
+}
+
+type traktWatchlistMovie struct {
+	Movie traktMovie `json:"movie"`
+}
+
+type traktWatchlistShow struct {
+	Show traktShow `json:"show"`
 }
 
 type syncItem struct {
@@ -568,14 +933,22 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("trakt client_id not configured for source %s", source.GetName())
 	}
+	accessToken := source.GetApiKey()
+	if accessToken == "" {
+		return nil, fmt.Errorf("trakt api_key (OAuth access token) not configured for source %s", source.GetName())
+	}
 
 	var items []syncItem
 
-	movies, err := traktGet[traktMovie](m.httpCli, clientID, "/sync/watchlist/movies")
+	movies, err := traktGet[traktWatchlistMovie](m.httpCli, clientID, accessToken, "/sync/watchlist/movies")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist movies: %w", err)
 	}
-	for _, mv := range movies {
+	for _, entry := range movies {
+		mv := entry.Movie
+		if mv.IDs.Trakt == 0 && mv.Title == "" {
+			continue
+		}
 		items = append(items, syncItem{
 			ExternalID: fmt.Sprintf("trakt_%d", mv.IDs.Trakt),
 			IMDBID:     mv.IDs.IMDb,
@@ -587,11 +960,15 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 		})
 	}
 
-	shows, err := traktGet[traktShow](m.httpCli, clientID, "/sync/watchlist/shows")
+	shows, err := traktGet[traktWatchlistShow](m.httpCli, clientID, accessToken, "/sync/watchlist/shows")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist shows: %w", err)
 	}
-	for _, show := range shows {
+	for _, entry := range shows {
+		show := entry.Show
+		if show.IDs.Trakt == 0 && show.Title == "" {
+			continue
+		}
 		items = append(items, syncItem{
 			ExternalID: fmt.Sprintf("trakt_%d", show.IDs.Trakt),
 			IMDBID:     show.IDs.IMDb,
@@ -606,7 +983,7 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 	return items, nil
 }
 
-func traktGet[T any](cli *http.Client, clientID, path string) ([]T, error) {
+func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T, error) {
 	base := "https://api.trakt.tv"
 	req, err := http.NewRequest("GET", base+path, nil)
 	if err != nil {
@@ -615,6 +992,7 @@ func traktGet[T any](cli *http.Client, clientID, path string) ([]T, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("trakt-api-version", "2")
 	req.Header.Set("trakt-api-key", clientID)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -764,7 +1142,7 @@ func (m *Module) storeItems(sourceID string, items []syncItem) int {
 }
 
 func (m *Module) loadSources() []*listsyncv1.ListSource {
-	rows, err := m.db.Query(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at FROM list_sources ORDER BY name`)
+	rows, err := m.db.Query(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,'') FROM list_sources ORDER BY name`)
 	if err != nil {
 		return nil
 	}
@@ -773,10 +1151,11 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 	var sources []*listsyncv1.ListSource
 	for rows.Next() {
 		var id, name, stype, username, clientID, listURL, createdAt, updatedAt string
+		var baseURL, apiKey, qualityProfileID, rootFolderPath string
 		var enabled int64
 		var interval int64
 		var lastSynced sql.NullString
-		if err := rows.Scan(&id, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath); err != nil {
 			continue
 		}
 		sources = append(sources, &listsyncv1.ListSource{
@@ -784,18 +1163,21 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 			Username: username, ClientId: clientID, ListUrl: listURL,
 			SyncIntervalMinutes: int32(interval), LastSynced: lastSynced.String,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
+			BaseUrl: baseURL, ApiKey: apiKey,
+			QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
 		})
 	}
 	return sources
 }
 
 func (m *Module) loadSource(id string) *listsyncv1.ListSource {
-	row := m.db.QueryRow(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at FROM list_sources WHERE id = ?`, id)
+	row := m.db.QueryRow(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,'') FROM list_sources WHERE id = ?`, id)
 	var srcID, name, stype, username, clientID, listURL, createdAt, updatedAt string
+	var baseURL, apiKey, qualityProfileID, rootFolderPath string
 	var enabled int64
 	var interval int64
 	var lastSynced sql.NullString
-	if err := row.Scan(&srcID, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&srcID, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath); err != nil {
 		return nil
 	}
 	return &listsyncv1.ListSource{
@@ -803,6 +1185,8 @@ func (m *Module) loadSource(id string) *listsyncv1.ListSource {
 		Username: username, ClientId: clientID, ListUrl: listURL,
 		SyncIntervalMinutes: int32(interval), LastSynced: lastSynced.String,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
+		BaseUrl: baseURL, ApiKey: apiKey,
+		QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
 	}
 }
 

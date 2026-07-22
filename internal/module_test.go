@@ -32,8 +32,24 @@ func TestModuleInfo(t *testing.T) {
 	if info.Version == "" {
 		t.Error("module version must not be empty")
 	}
-	if len(info.Capabilities) == 0 || info.Capabilities[0] != "media.listsync" {
-		t.Errorf("expected media.listsync, got %v", info.Capabilities)
+	found := false
+	for _, c := range info.Capabilities {
+		if c == "media.listsync" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected media.listsync in %v", info.Capabilities)
+	}
+	hasImportlist := false
+	for _, r := range info.Roles {
+		if r == "importlist" {
+			hasImportlist = true
+		}
+	}
+	if !hasImportlist {
+		t.Errorf("expected importlist role, got %v", info.Roles)
 	}
 }
 
@@ -251,4 +267,61 @@ func TestHealth(t *testing.T) {
 	if err := m.Health(ctx); err != nil {
 		t.Fatal("expected health to pass")
 	}
+}
+
+func TestMarkSyncItemAdded(t *testing.T) {
+	m := newTestModule(t)
+	sourceID := "src1"
+	items := []syncItem{{
+		ExternalID: "trakt_1",
+		TMDBID:     550,
+		MediaType:  "movie",
+		Title:      "Fight Club",
+		Year:       1999,
+		Action:     "watchlist",
+	}}
+	if n := m.storeItems(sourceID, items); n != 1 {
+		t.Fatalf("expected 1 new item, got %d", n)
+	}
+	m.markSyncItemAdded(sourceID, "trakt_1", "mv_550")
+
+	m.mu.RLock()
+	var status, matched string
+	err := m.db.QueryRow(
+		`SELECT status, matched_item_id FROM sync_items WHERE source_id = ? AND external_id = ?`,
+		sourceID, "trakt_1",
+	).Scan(&status, &matched)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "added" {
+		t.Errorf("expected status added, got %s", status)
+	}
+	if matched != "mv_550" {
+		t.Errorf("expected matched_item_id mv_550, got %s", matched)
+	}
+}
+
+func TestAddItemsToLibraryFallbackNoTMDB(t *testing.T) {
+	m := newTestModule(t)
+	src := &listsyncv1.ListSource{Id: "src"}
+	// No mesh client / library modules: items with TMDB fail add and fall back;
+	// items without TMDB go straight to automation fallback (also no-op without mesh).
+	m.addItemsToLibrary(src, []syncItem{
+		{ExternalID: "x1", TMDBID: 0, MediaType: "movie", Title: "Unknown"},
+		{ExternalID: "x2", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999},
+	})
+}
+
+func TestAddItemsToLibrarySkipsAlreadyAdded(t *testing.T) {
+	m := newTestModule(t)
+	src := &listsyncv1.ListSource{Id: "src1"}
+	m.storeItems(src.Id, []syncItem{{
+		ExternalID: "trakt_1", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999, Action: "watchlist",
+	}})
+	m.markSyncItemAdded(src.Id, "trakt_1", "mv_550")
+	m.addItemsToLibrary(src, []syncItem{{
+		ExternalID: "trakt_1", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999,
+	}})
 }

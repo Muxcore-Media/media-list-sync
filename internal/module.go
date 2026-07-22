@@ -22,6 +22,7 @@ import (
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	rootsv1 "github.com/Muxcore-Media/media-root-folders/proto/rootsv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 	metadatav1 "github.com/Muxcore-Media/metadata-tmdb/proto/metadatav1"
 
@@ -54,6 +55,10 @@ type Module struct {
 
 	metadataConn   *grpc.ClientConn
 	metadataClient metadatav1.MetadataServiceClient
+
+	rootsConn   *grpc.ClientConn
+	rootsClient rootsv1.RootFolderServiceClient
+	rootsListFn func(ctx context.Context, mediaKind string) ([]string, error)
 }
 
 type Config struct {
@@ -236,6 +241,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.metadataConn != nil {
 		m.metadataConn.Close()
+	}
+	if m.rootsConn != nil {
+		_ = m.rootsConn.Close()
 	}
 	if m.mc != nil {
 		m.mc.Close()
@@ -621,6 +629,7 @@ func (m *Module) resolveViaSearch(item syncItem) (syncItem, bool) {
 		Query: item.Title,
 		Type:  mediaType,
 		Page:  1,
+		Year:  int32(item.Year),
 	})
 	if err != nil || len(resp.GetResults()) == 0 {
 		return item, false
@@ -756,6 +765,11 @@ func (m *Module) ListSources(ctx context.Context, req *listsyncv1.ListSourcesReq
 }
 
 func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest) (*listsyncv1.AddSourceResponse, error) {
+	rootPath, err := m.resolveRootFolderPath(ctx, req.GetRootFolderPath(), "")
+	if err != nil {
+		return nil, err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -767,9 +781,9 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 		interval = 1440
 	}
 
-	_, err := m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
-		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), req.GetRootFolderPath(), now, now)
+		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), rootPath, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("add source: %w", err)
 	}

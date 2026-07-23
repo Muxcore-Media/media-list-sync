@@ -96,7 +96,7 @@ message GetItemsResponse {
 message SyncItem {
   string id = 1;
   string source_id = 2;
-  string external_id = 3;     // Trakt or IMDb ID
+  string external_id = 3;     // Source-native id (trakt_N, tt…, plex_, jf_, radarr_, sonarr_)
   int32 tmdb_id = 4;
   string imdb_id = 5;
   string media_type = 6;      // "movie", "tv"

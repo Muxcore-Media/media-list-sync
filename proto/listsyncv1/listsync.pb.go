@@ -986,7 +986,7 @@ type SyncItem struct {
 
 	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SourceId      string `protobuf:"bytes,2,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
-	ExternalId    string `protobuf:"bytes,3,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"` // Trakt or IMDb ID
+	ExternalId    string `protobuf:"bytes,3,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"` // Source-native id (trakt_N, tt…, plex_, jf_, radarr_, sonarr_)
 	TmdbId        int32  `protobuf:"varint,4,opt,name=tmdb_id,json=tmdbId,proto3" json:"tmdb_id,omitempty"`
 	ImdbId        string `protobuf:"bytes,5,opt,name=imdb_id,json=imdbId,proto3" json:"imdb_id,omitempty"`
 	MediaType     string `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"` // "movie", "tv"

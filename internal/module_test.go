@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
+	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 )
 
 func newTestModule(t *testing.T) *Module {
@@ -325,3 +327,84 @@ func TestAddItemsToLibrarySkipsAlreadyAdded(t *testing.T) {
 		ExternalID: "trakt_1", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999,
 	}})
 }
+
+func TestQueueMissingMonitoredEpisodes(t *testing.T) {
+	m := newTestModule(t)
+	var refreshed string
+	var queued []*automationv1.AddToQueueRequest
+	m.refreshSeriesFn = func(ctx context.Context, seriesID string) error {
+		refreshed = seriesID
+		return nil
+	}
+	m.listMissingFn = func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error) {
+		if seriesID != "tv_1396" || page != 1 {
+			t.Fatalf("unexpected ListMissing series=%s page=%d", seriesID, page)
+		}
+		return &tvmgmtv1.ListMissingResponse{
+			Total: 2,
+			Items: []*tvmgmtv1.MissingEpisodeItem{
+				{EpisodeId: "ep1", SeriesId: seriesID, TmdbId: 1396, Title: "Breaking Bad", Year: 2008, SeasonNumber: 1, EpisodeNumber: 1},
+				{EpisodeId: "ep2", SeriesId: seriesID, TmdbId: 1396, Title: "Breaking Bad", Year: 2008, SeasonNumber: 1, EpisodeNumber: 2},
+			},
+		}, nil
+	}
+	m.addToQueueFn = func(ctx context.Context, req *automationv1.AddToQueueRequest) error {
+		queued = append(queued, req)
+		return nil
+	}
+
+	m.queueMissingMonitoredEpisodes("tv_1396", syncItem{
+		MediaType: "tv", TMDBID: 1396, Title: "Breaking Bad", Year: 2008,
+	})
+
+	if refreshed != "tv_1396" {
+		t.Fatalf("expected refresh of tv_1396, got %q", refreshed)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("expected 2 queued episodes, got %d", len(queued))
+	}
+	if queued[0].ItemType != "tv" || queued[0].ItemId != "ep1" || queued[0].SeasonNumber != 1 || queued[0].EpisodeNumber != 1 {
+		t.Errorf("first episode queue: %+v", queued[0])
+	}
+	if queued[1].ItemId != "ep2" || queued[1].EpisodeNumber != 2 {
+		t.Errorf("second episode queue: %+v", queued[1])
+	}
+}
+
+func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
+	m := newTestModule(t)
+	src := &listsyncv1.ListSource{Id: "src_tv"}
+	m.storeItems(src.Id, []syncItem{{
+		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist",
+	}})
+	m.markSyncItemAdded(src.Id, "trakt_tv_1", "tv_1396")
+
+	done := make(chan struct{})
+	m.refreshSeriesFn = func(ctx context.Context, seriesID string) error { return nil }
+	m.listMissingFn = func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error) {
+		return &tvmgmtv1.ListMissingResponse{
+			Total: 1,
+			Items: []*tvmgmtv1.MissingEpisodeItem{
+				{EpisodeId: "ep1", SeriesId: seriesID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Breaking Bad", TmdbId: 1396},
+			},
+		}, nil
+	}
+	m.addToQueueFn = func(ctx context.Context, req *automationv1.AddToQueueRequest) error {
+		if req.ItemId != "ep1" {
+			t.Errorf("unexpected item id %s", req.ItemId)
+		}
+		close(done)
+		return nil
+	}
+
+	m.addItemsToLibrary(src, []syncItem{{
+		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008,
+	}})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for missing-episode queue")
+	}
+}
+

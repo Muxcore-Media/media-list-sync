@@ -59,6 +59,11 @@ type Module struct {
 	rootsConn   *grpc.ClientConn
 	rootsClient rootsv1.RootFolderServiceClient
 	rootsListFn func(ctx context.Context, mediaKind string) ([]string, error)
+
+	// Optional test hooks for missing-episode queueing (nil = use mesh clients).
+	refreshSeriesFn func(ctx context.Context, seriesID string) error
+	listMissingFn   func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error)
+	addToQueueFn    func(ctx context.Context, req *automationv1.AddToQueueRequest) error
 }
 
 type Config struct {
@@ -95,7 +100,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:     "0.1.0",
+		Version:     "0.1.2",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -525,6 +530,12 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 	var fallback []syncItem
 	for _, item := range items {
 		if m.syncItemStatus(sourceID, item.ExternalID) == "added" {
+			// Re-syncs: still queue missing monitored episodes for known series.
+			if item.MediaType == "tv" {
+				if matchedID := m.syncItemMatchedID(sourceID, item.ExternalID); matchedID != "" {
+					go m.queueMissingMonitoredEpisodes(matchedID, item)
+				}
+			}
 			continue
 		}
 		if item.TMDBID <= 0 {
@@ -543,6 +554,9 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 			continue
 		}
 		m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
+		if item.MediaType == "tv" && matchedID != "" {
+			go m.queueMissingMonitoredEpisodes(matchedID, item)
+		}
 	}
 	if len(fallback) > 0 {
 		m.queueWithAutomation(fallback)
@@ -561,6 +575,20 @@ func (m *Module) syncItemStatus(sourceID, externalID string) string {
 		sourceID, externalID,
 	).Scan(&status)
 	return status
+}
+
+func (m *Module) syncItemMatchedID(sourceID, externalID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.db == nil {
+		return ""
+	}
+	var matched string
+	_ = m.db.QueryRow(
+		`SELECT matched_item_id FROM sync_items WHERE source_id = ? AND external_id = ?`,
+		sourceID, externalID,
+	).Scan(&matched)
+	return matched
 }
 
 func (m *Module) resolveTMDB(item syncItem) (syncItem, bool) {
@@ -776,6 +804,109 @@ func (m *Module) queueWithAutomation(items []syncItem) {
 		if err != nil {
 			slog.Debug("queue item failed", "title", item.Title, "error", err)
 		}
+	}
+}
+
+// queueMissingMonitoredEpisodes refreshes series metadata when needed, then
+// enqueues each missing monitored episode (not just the series row).
+func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem) {
+	ctx := context.Background()
+
+	refresh := m.refreshSeriesFn
+	listMissing := m.listMissingFn
+	addQueue := m.addToQueueFn
+
+	if refresh == nil || listMissing == nil || addQueue == nil {
+		if err := m.ensureTV(ctx); err != nil {
+			slog.Debug("tv module unavailable for missing-episode queue", "series_id", seriesID, "error", err)
+			return
+		}
+		if err := m.ensureAutomation(ctx); err != nil {
+			slog.Debug("automation unavailable for missing-episode queue", "series_id", seriesID, "error", err)
+			return
+		}
+		m.mu.RLock()
+		tc := m.tvClient
+		ac := m.automationClient
+		m.mu.RUnlock()
+		if tc == nil || ac == nil {
+			return
+		}
+		if refresh == nil {
+			refresh = func(ctx context.Context, seriesID string) error {
+				_, err := tc.RefreshMetadata(ctx, &tvmgmtv1.RefreshMetadataRequest{SeriesId: seriesID})
+				return err
+			}
+		}
+		if listMissing == nil {
+			listMissing = func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error) {
+				return tc.ListMissing(ctx, &tvmgmtv1.ListMissingRequest{
+					Page: page, PageSize: pageSize, SeriesId: seriesID,
+				})
+			}
+		}
+		if addQueue == nil {
+			addQueue = func(ctx context.Context, req *automationv1.AddToQueueRequest) error {
+				_, err := ac.AddToQueue(ctx, req)
+				return err
+			}
+		}
+	}
+
+	// AddTVShow populates episodes asynchronously; RefreshMetadata fills them synchronously.
+	if err := refresh(ctx, seriesID); err != nil {
+		slog.Debug("refresh before missing queue failed", "series_id", seriesID, "error", err)
+	}
+
+	var queued int
+	page := int32(1)
+	const pageSize = int32(100)
+	for {
+		resp, err := listMissing(ctx, seriesID, page, pageSize)
+		if err != nil {
+			slog.Debug("ListMissing failed", "series_id", seriesID, "error", err)
+			return
+		}
+		for _, ep := range resp.GetItems() {
+			title := ep.GetTitle()
+			if title == "" {
+				title = series.Title
+			}
+			tmdbID := ep.GetTmdbId()
+			if tmdbID == 0 {
+				tmdbID = int32(series.TMDBID)
+			}
+			year := ep.GetYear()
+			if year == 0 {
+				year = int32(series.Year)
+			}
+			err := addQueue(ctx, &automationv1.AddToQueueRequest{
+				ItemType:      "tv",
+				ItemId:        ep.GetEpisodeId(),
+				TmdbId:        tmdbID,
+				Title:         title,
+				Year:          year,
+				SeasonNumber:  ep.GetSeasonNumber(),
+				EpisodeNumber: ep.GetEpisodeNumber(),
+			})
+			if err != nil {
+				slog.Debug("queue missing episode failed",
+					"series_id", seriesID,
+					"episode_id", ep.GetEpisodeId(),
+					"error", err,
+				)
+				continue
+			}
+			queued++
+		}
+		if int32(len(resp.GetItems())) < pageSize || page*pageSize >= resp.GetTotal() {
+			break
+		}
+		page++
+	}
+	if queued > 0 {
+		slog.Info("queued missing monitored episodes after list sync",
+			"series_id", seriesID, "queued", queued, "title", series.Title)
 	}
 }
 

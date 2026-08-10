@@ -100,7 +100,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:     "0.1.2",
+		Version:     "0.1.3",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -881,13 +881,17 @@ func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem)
 				year = int32(series.Year)
 			}
 			err := addQueue(ctx, &automationv1.AddToQueueRequest{
-				ItemType:      "tv",
-				ItemId:        ep.GetEpisodeId(),
-				TmdbId:        tmdbID,
-				Title:         title,
-				Year:          year,
-				SeasonNumber:  ep.GetSeasonNumber(),
-				EpisodeNumber: ep.GetEpisodeNumber(),
+				ItemType:         "tv",
+				ItemId:           ep.GetEpisodeId(),
+				TmdbId:           tmdbID,
+				Title:            title,
+				Year:             year,
+				SeasonNumber:     ep.GetSeasonNumber(),
+				EpisodeNumber:    ep.GetEpisodeNumber(),
+				AbsoluteNumber:   ep.GetAbsoluteNumber(),
+				SeriesType:       ep.GetSeriesType(),
+				SeriesId:         seriesID,
+				QualityProfileId: ep.GetQualityProfileId(),
 			})
 			if err != nil {
 				slog.Debug("queue missing episode failed",

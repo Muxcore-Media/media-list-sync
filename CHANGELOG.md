@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.3 (2026-08-10)
+
+- Pass absolute episode number, series type, series id, and quality profile when queueing missing episodes (media-automation v0.1.3)
+
 ## v0.1.2 (2026-08-10)
 
 - After list sync, queue missing monitored episodes for TV series (RefreshMetadata + ListMissing → automation), not only series/movie rows

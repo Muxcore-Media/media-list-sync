@@ -113,7 +113,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.1.6",
+		Version:      "0.1.7",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -125,6 +125,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 			"importlist.jellyfin",
 			"importlist.radarr",
 			"importlist.sonarr",
+			"settings",
 		},
 		MinCoreVersion: "0.4.0",
 		HTTPAddr:       m.grpcAddr,

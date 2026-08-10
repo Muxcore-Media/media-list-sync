@@ -28,22 +28,25 @@ import (
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/core/sdk/go/client"
+	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
 	_ "modernc.org/sqlite"
 )
 
 type Module struct {
 	listsyncv1.UnimplementedListSyncServiceServer
 
-	mu sync.RWMutex
-	db *sql.DB
-	mc *client.Client
+	mu    sync.RWMutex
+	cfgMu sync.RWMutex
+	db    *sql.DB
+	mc    *client.Client
 
-	id       string
-	dbPath   string
-	grpcAddr string
-	grpcSrv  *grpc.Server
-	grpcLis  net.Listener
-	httpCli  *http.Client
+	id           string
+	dbPath       string
+	grpcAddr     string
+	pollInterval time.Duration
+	grpcSrv      *grpc.Server
+	grpcLis      net.Listener
+	httpCli      *http.Client
 
 	automationConn   *grpc.ClientConn
 	automationClient automationv1.AutomationServiceClient
@@ -67,9 +70,10 @@ type Module struct {
 }
 
 type Config struct {
-	ID       string
-	DBPath   string
-	GRPCAddr string
+	ID           string
+	DBPath       string
+	GRPCAddr     string
+	PollInterval time.Duration
 }
 
 func NewModule(cfg Config) *Module {
@@ -82,17 +86,26 @@ func NewModule(cfg Config) *Module {
 	if cfg.GRPCAddr == "" {
 		cfg.GRPCAddr = ":9530"
 	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = 15 * time.Minute
+	}
 	if v := os.Getenv("LISTSYNC_DB_PATH"); v != "" {
 		cfg.DBPath = v
 	}
 	if v := os.Getenv("LISTSYNC_GRPC_ADDR"); v != "" {
 		cfg.GRPCAddr = v
 	}
+	if v := os.Getenv("LISTSYNC_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.PollInterval = d
+		}
+	}
 	return &Module{
-		id:       cfg.ID,
-		dbPath:   cfg.DBPath,
-		grpcAddr: cfg.GRPCAddr,
-		httpCli:  &http.Client{Timeout: 30 * time.Second},
+		id:           cfg.ID,
+		dbPath:       cfg.DBPath,
+		grpcAddr:     cfg.GRPCAddr,
+		pollInterval: cfg.PollInterval,
+		httpCli:      &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -100,7 +113,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.1.5",
+		Version:      "0.1.6",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -219,6 +232,7 @@ func (m *Module) Init(ctx context.Context) error {
 func (m *Module) Start(ctx context.Context) error {
 	m.grpcSrv = grpc.NewServer()
 	listsyncv1.RegisterListSyncServiceServer(m.grpcSrv, m)
+	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 
 	go func() {
 		slog.Info("media-list-sync gRPC started", "addr", m.grpcAddr)
@@ -425,13 +439,13 @@ func dialAddrForModule(moduleID, httpAddr string) string {
 // ── Sync Loop ──────────────────────────────────────────────────
 
 func (m *Module) syncLoop() {
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
-
 	time.Sleep(10 * time.Second)
 	m.syncAll()
 
-	for range ticker.C {
+	for {
+		d := m.getPollInterval()
+		timer := time.NewTimer(d)
+		<-timer.C
 		m.syncAll()
 	}
 }

@@ -344,7 +344,8 @@ func TestQueueMissingMonitoredEpisodes(t *testing.T) {
 			Total: 2,
 			Items: []*tvmgmtv1.MissingEpisodeItem{
 				{EpisodeId: "ep1", SeriesId: seriesID, TmdbId: 1396, Title: "Breaking Bad", Year: 2008, SeasonNumber: 1, EpisodeNumber: 1},
-				{EpisodeId: "ep2", SeriesId: seriesID, TmdbId: 1396, Title: "Breaking Bad", Year: 2008, SeasonNumber: 1, EpisodeNumber: 2},
+				{EpisodeId: "ep2", SeriesId: seriesID, TmdbId: 1396, Title: "Breaking Bad", Year: 2008, SeasonNumber: 1, EpisodeNumber: 2,
+					AbsoluteNumber: 150, SeriesType: "anime", QualityProfileId: "qp"},
 			},
 		}, nil
 	}
@@ -368,6 +369,9 @@ func TestQueueMissingMonitoredEpisodes(t *testing.T) {
 	}
 	if queued[1].ItemId != "ep2" || queued[1].EpisodeNumber != 2 {
 		t.Errorf("second episode queue: %+v", queued[1])
+	}
+	if queued[1].AbsoluteNumber != 150 || queued[1].SeriesType != "anime" || queued[1].SeriesId != "tv_1396" || queued[1].QualityProfileId != "qp" {
+		t.Errorf("anime absolute fields: %+v", queued[1])
 	}
 }
 

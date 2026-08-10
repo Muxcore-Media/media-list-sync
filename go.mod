@@ -6,7 +6,7 @@ require (
 	github.com/Muxcore-Media/core/pkg/contracts v0.5.0
 	github.com/Muxcore-Media/core/sdk/go/client v0.5.0
 	github.com/Muxcore-Media/core/sdk/go/module v0.5.0
-	github.com/Muxcore-Media/media-automation v0.1.0
+	github.com/Muxcore-Media/media-automation v0.1.3
 	github.com/Muxcore-Media/media-movies v0.1.1
 	github.com/Muxcore-Media/media-root-folders v0.1.1
 	github.com/Muxcore-Media/media-tvshows v0.1.1

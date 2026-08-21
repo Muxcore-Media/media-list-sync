@@ -25,6 +25,7 @@ import (
 	rootsv1 "github.com/Muxcore-Media/media-root-folders/proto/rootsv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 	metadatav1 "github.com/Muxcore-Media/metadata-tmdb/proto/metadatav1"
+	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/core/sdk/go/client"
@@ -63,10 +64,20 @@ type Module struct {
 	rootsClient rootsv1.RootFolderServiceClient
 	rootsListFn func(ctx context.Context, mediaKind string) ([]string, error)
 
+	maintainerConn   *grpc.ClientConn
+	maintainerClient maintainv1.MaintainerServiceClient
+
 	// Optional test hooks for missing-episode queueing (nil = use mesh clients).
 	refreshSeriesFn func(ctx context.Context, seriesID string) error
 	listMissingFn   func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error)
 	addToQueueFn    func(ctx context.Context, req *automationv1.AddToQueueRequest) error
+
+	// Optional test hook for clean-library actions (nil = use mesh clients).
+	cleanLibraryItemFn func(source *listsyncv1.ListSource, item trackedSyncItem, level string) error
+
+	checkImportBlockedFn func(ctx context.Context, item syncItem) (blocked bool, reason string)
+	applyImportTagsFn    func(ctx context.Context, item syncItem, libraryID string, tagIDs []string) error
+	applyMonitorModeFn   func(ctx context.Context, source *listsyncv1.ListSource, item syncItem, libraryID, mode string) error
 }
 
 type Config struct {
@@ -113,7 +124,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.1.7",
+		Version:      "0.2.3",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -125,6 +136,13 @@ func (m *Module) Info() contracts.ModuleInfo {
 			"importlist.jellyfin",
 			"importlist.radarr",
 			"importlist.sonarr",
+			"importlist.radarr_importlist",
+			"importlist.sonarr_importlist",
+			"importlist.trakt_list",
+			"importlist.stevenlu",
+			"importlist.tmdb_list",
+			"importlist.rss",
+			"importlist.watcharr",
 			"settings",
 		},
 		MinCoreVersion: "0.4.0",
@@ -211,9 +229,15 @@ func (m *Module) Init(ctx context.Context) error {
 		{"api_key", "TEXT DEFAULT ''"},
 		{"quality_profile_id", "TEXT DEFAULT ''"},
 		{"root_folder_path", "TEXT DEFAULT ''"},
+		{"clean_library_level", "TEXT DEFAULT 'keep'"},
+		{"tag_ids", "TEXT DEFAULT ''"},
+		{"monitor_mode", "TEXT DEFAULT 'all'"},
+		{"minimum_availability", "TEXT DEFAULT 'announced'"},
+		{"search_on_add", "INTEGER DEFAULT 1"},
 	} {
 		_, _ = db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE list_sources ADD COLUMN %s %s`, col.name, col.def))
 	}
+	_, _ = db.ExecContext(ctx, `ALTER TABLE sync_log ADD COLUMN items_removed INTEGER DEFAULT 0`)
 
 	m.mu.Lock()
 	m.db = db
@@ -264,6 +288,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.rootsConn != nil {
 		_ = m.rootsConn.Close()
+	}
+	if m.maintainerConn != nil {
+		_ = m.maintainerConn.Close()
 	}
 	if m.mc != nil {
 		m.mc.Close()
@@ -451,11 +478,11 @@ func (m *Module) syncLoop() {
 	}
 }
 
-func (m *Module) syncAll() (found, newItems int) {
+func (m *Module) syncAll() (found, newItems, removed int) {
 	return m.syncAllForced(false)
 }
 
-func (m *Module) syncAllForced(force bool) (found, newItems int) {
+func (m *Module) syncAllForced(force bool) (found, newItems, removed int) {
 	m.mu.RLock()
 	sources := m.loadSources()
 	m.mu.RUnlock()
@@ -476,14 +503,15 @@ func (m *Module) syncAllForced(force bool) (found, newItems int) {
 				}
 			}
 		}
-		f, n := m.syncSource(s)
+		f, n, r := m.syncSource(s)
 		found += f
 		newItems += n
+		removed += r
 	}
-	return found, newItems
+	return found, newItems, removed
 }
 
-func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int) {
+func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount, removedCount int) {
 	logID := fmt.Sprintf("log_%d", time.Now().UnixNano())
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -508,6 +536,20 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 		items, err = m.fetchRadarr(source)
 	case "sonarr":
 		items, err = m.fetchSonarr(source)
+	case "radarr_importlist":
+		items, err = m.fetchRadarrImportList(source)
+	case "sonarr_importlist":
+		items, err = m.fetchSonarrImportList(source)
+	case "trakt_list":
+		items, err = m.fetchTraktList(source)
+	case "stevenlu":
+		items, err = m.fetchStevenLu(source)
+	case "tmdb_list":
+		items, err = m.fetchTMDBList(source)
+	case "rss":
+		items, err = m.fetchRSS(source)
+	case "watcharr":
+		items, err = m.fetchWatcharr(source)
 	default:
 		err = fmt.Errorf("unknown source type: %s", source.GetType())
 	}
@@ -515,6 +557,7 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 	if err == nil {
 		newCount = m.storeItems(source.GetId(), items)
 		found = len(items)
+		removedCount = m.reconcileRemovedItems(source, items)
 	}
 
 	completed := time.Now().UTC().Format(time.RFC3339)
@@ -527,26 +570,31 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 	}
 
 	m.mu.Lock()
-	m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, error = ?, completed_at = ? WHERE id = ?`,
-		status, found, newCount, errStr, completed, logID)
+	m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, items_removed = ?, error = ?, completed_at = ? WHERE id = ?`,
+		status, found, newCount, removedCount, errStr, completed, logID)
 	m.db.Exec(`UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
 	m.mu.Unlock()
 
-	if err == nil && len(items) > 0 {
-		m.addItemsToLibrary(source, items)
+	if err == nil {
+		if len(items) > 0 {
+			m.addItemsToLibrary(source, items)
+		}
+		m.publishImportListSynced(source, found, newCount, removedCount)
 	}
 
-	slog.Info("sync completed", "source", source.GetName(), "found", found, "new", newCount)
-	return found, newCount
+	slog.Info("sync completed", "source", source.GetName(), "found", found, "new", newCount, "removed", removedCount)
+	return found, newCount, removedCount
 }
 
 func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncItem) {
 	sourceID := source.GetId()
+	ctx := context.Background()
+	monitorNone := normalizeMonitorMode(source.GetMonitorMode()) == monitorModeNone
+	searchOnAdd := sourceSearchOnAdd(source)
 	var fallback []syncItem
 	for _, item := range items {
 		if m.syncItemStatus(sourceID, item.ExternalID) == "added" {
-			// Re-syncs: still queue missing monitored episodes for known series.
-			if item.MediaType == "tv" {
+			if searchOnAdd && item.MediaType == "tv" && !monitorNone {
 				if matchedID := m.syncItemMatchedID(sourceID, item.ExternalID); matchedID != "" {
 					go m.queueMissingMonitoredEpisodes(matchedID, item)
 				}
@@ -562,15 +610,27 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 			fallback = append(fallback, item)
 			continue
 		}
+		if skip, reason := m.shouldSkipImport(ctx, source, item); skip {
+			m.markSyncItemSkipped(sourceID, item.ExternalID, reason)
+			continue
+		}
 		matchedID, err := m.addLibraryItem(source, item)
 		if err != nil {
 			slog.Debug("library add failed", "title", item.Title, "error", err)
 			fallback = append(fallback, item)
 			continue
 		}
+		m.applyImportPolicy(ctx, source, item, matchedID)
 		m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
-		if item.MediaType == "tv" && matchedID != "" {
-			go m.queueMissingMonitoredEpisodes(matchedID, item)
+		if searchOnAdd && matchedID != "" {
+			switch item.MediaType {
+			case "tv":
+				if !monitorNone {
+					go m.queueMissingMonitoredEpisodes(matchedID, item)
+				}
+			case "movie":
+				go m.queueMovieSearch(source, matchedID, item)
+			}
 		}
 	}
 	if len(fallback) > 0 {
@@ -797,6 +857,37 @@ func (m *Module) markSyncItemAdded(sourceID, externalID, matchedID string) {
 	)
 }
 
+func (m *Module) queueMovieSearch(source *listsyncv1.ListSource, movieID string, item syncItem) {
+	addQueue := m.addToQueueFn
+	if addQueue == nil {
+		if err := m.ensureAutomation(context.Background()); err != nil {
+			slog.Debug("automation unavailable for movie search queue", "movie_id", movieID, "error", err)
+			return
+		}
+		m.mu.RLock()
+		ac := m.automationClient
+		m.mu.RUnlock()
+		if ac == nil {
+			return
+		}
+		addQueue = func(ctx context.Context, req *automationv1.AddToQueueRequest) error {
+			_, err := ac.AddToQueue(ctx, req)
+			return err
+		}
+	}
+	err := addQueue(context.Background(), &automationv1.AddToQueueRequest{
+		ItemType:         "movie",
+		ItemId:           movieID,
+		TmdbId:           int32(item.TMDBID),
+		Title:            item.Title,
+		Year:             int32(item.Year),
+		QualityProfileId: source.GetQualityProfileId(),
+	})
+	if err != nil {
+		slog.Debug("queue movie search failed", "movie_id", movieID, "title", item.Title, "error", err)
+	}
+}
+
 func (m *Module) queueWithAutomation(items []syncItem) {
 	if err := m.ensureAutomation(context.Background()); err != nil {
 		slog.Debug("automation not available for queueing", "error", err)
@@ -954,14 +1045,135 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 		interval = 1440
 	}
 
-	_, err = m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	searchOnAdd := addSourceSearchOnAdd(req)
+	searchOnAddInt := int64(0)
+	if searchOnAdd {
+		searchOnAddInt = 1
+	}
+
+	_, err = m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, clean_library_level, tag_ids, monitor_mode, minimum_availability, search_on_add, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
-		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), rootPath, now, now)
+		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), rootPath,
+		normalizeCleanLibraryLevel(req.GetCleanLibraryLevel()), req.GetTagIds(),
+		normalizeMonitorMode(req.GetMonitorMode()), normalizeMinimumAvailability(req.GetMinimumAvailability()),
+		searchOnAddInt, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("add source: %w", err)
 	}
 
 	return &listsyncv1.AddSourceResponse{Source: m.loadSource(id)}, nil
+}
+
+func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceRequest) (*listsyncv1.UpdateSourceResponse, error) {
+	if strings.TrimSpace(req.GetId()) == "" {
+		return nil, fmt.Errorf("source id required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing := m.loadSource(req.GetId())
+	if existing == nil {
+		return nil, fmt.Errorf("source not found: %s", req.GetId())
+	}
+
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		name = existing.GetName()
+	}
+
+	interval := req.GetSyncIntervalMinutes()
+	if interval <= 0 {
+		interval = existing.GetSyncIntervalMinutes()
+	}
+
+	apiKey := existing.GetApiKey()
+	if v := strings.TrimSpace(req.GetApiKey()); v != "" {
+		apiKey = v
+	}
+
+	rootPath := existing.GetRootFolderPath()
+	if v := strings.TrimSpace(req.GetRootFolderPath()); v != "" {
+		resolved, err := m.resolveRootFolderPath(ctx, v, existing.GetType())
+		if err != nil {
+			return nil, err
+		}
+		rootPath = resolved
+	}
+
+	baseURL := existing.GetBaseUrl()
+	if v := strings.TrimSpace(req.GetBaseUrl()); v != "" {
+		baseURL = v
+	}
+
+	cleanLevel := existing.GetCleanLibraryLevel()
+	if v := strings.TrimSpace(req.GetCleanLibraryLevel()); v != "" {
+		cleanLevel = normalizeCleanLibraryLevel(v)
+	}
+	tagIDs := req.GetTagIds()
+	if tagIDs == "" {
+		tagIDs = existing.GetTagIds()
+	}
+	monitorMode := normalizeMonitorMode(req.GetMonitorMode())
+	if strings.TrimSpace(req.GetMonitorMode()) == "" {
+		monitorMode = normalizeMonitorMode(existing.GetMonitorMode())
+	}
+	minAvail := normalizeMinimumAvailability(req.GetMinimumAvailability())
+	if strings.TrimSpace(req.GetMinimumAvailability()) == "" {
+		minAvail = normalizeMinimumAvailability(existing.GetMinimumAvailability())
+	}
+
+	searchOnAdd := existing.GetSearchOnAdd()
+	if req.SearchOnAdd != nil {
+		searchOnAdd = req.GetSearchOnAdd()
+	}
+	searchOnAddInt := int64(0)
+	if searchOnAdd {
+		searchOnAddInt = 1
+	}
+
+	enabled := existing.GetEnabled()
+	if req.Enabled != nil {
+		enabled = req.GetEnabled()
+	}
+	enabledInt := int64(0)
+	if enabled {
+		enabledInt = 1
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := m.db.Exec(`UPDATE list_sources SET name = ?, enabled = ?, username = ?, client_id = ?, list_url = ?, sync_interval_minutes = ?, base_url = ?, api_key = ?, quality_profile_id = ?, root_folder_path = ?, clean_library_level = ?, tag_ids = ?, monitor_mode = ?, minimum_availability = ?, search_on_add = ?, updated_at = ? WHERE id = ?`,
+		name, enabledInt, req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
+		baseURL, apiKey, req.GetQualityProfileId(), rootPath, cleanLevel, tagIDs, monitorMode, minAvail, searchOnAddInt, now, req.GetId())
+	if err != nil {
+		return nil, fmt.Errorf("update source: %w", err)
+	}
+
+	return &listsyncv1.UpdateSourceResponse{Source: m.loadSource(req.GetId())}, nil
+}
+
+func (m *Module) TestSource(ctx context.Context, req *listsyncv1.TestSourceRequest) (*listsyncv1.TestSourceResponse, error) {
+	_ = ctx
+	var source *listsyncv1.ListSource
+	if id := strings.TrimSpace(req.GetSourceId()); id != "" {
+		m.mu.RLock()
+		source = m.loadSource(id)
+		m.mu.RUnlock()
+		if source == nil {
+			return &listsyncv1.TestSourceResponse{Ok: false, Message: "source not found"}, nil
+		}
+	} else {
+		source = probeSourceFromRequest(req)
+		if strings.TrimSpace(source.GetType()) == "" {
+			return &listsyncv1.TestSourceResponse{Ok: false, Message: "source type required"}, nil
+		}
+	}
+
+	msg, count, err := m.testSourceConnection(source)
+	if err != nil {
+		return &listsyncv1.TestSourceResponse{Ok: false, Message: err.Error()}, nil
+	}
+	return &listsyncv1.TestSourceResponse{Ok: true, Message: msg, ItemCount: int32(count)}, nil
 }
 
 func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceRequest) (*listsyncv1.RemoveSourceResponse, error) {
@@ -973,8 +1185,19 @@ func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceR
 }
 
 func (m *Module) SyncNow(ctx context.Context, req *listsyncv1.SyncNowRequest) (*listsyncv1.SyncNowResponse, error) {
-	found, newItems := m.syncAllForced(true)
-	return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems)}, nil
+	_ = ctx
+	if id := strings.TrimSpace(req.GetSourceId()); id != "" {
+		m.mu.RLock()
+		source := m.loadSource(id)
+		m.mu.RUnlock()
+		if source == nil {
+			return nil, fmt.Errorf("source not found: %s", id)
+		}
+		found, newItems, removed := m.syncSource(source)
+		return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems), ItemsRemoved: int32(removed)}, nil
+	}
+	found, newItems, removed := m.syncAllForced(true)
+	return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems), ItemsRemoved: int32(removed)}, nil
 }
 
 func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryRequest) (*listsyncv1.GetHistoryResponse, error) {
@@ -994,7 +1217,7 @@ func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryReque
 	var total int
 	m.db.QueryRow(`SELECT COUNT(*) FROM sync_log`).Scan(&total)
 
-	rows, err := m.db.Query(`SELECT id, source_id, source_name, status, items_found, items_new, error, started_at, completed_at FROM sync_log ORDER BY started_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
+	rows, err := m.db.Query(`SELECT id, source_id, source_name, status, items_found, items_new, COALESCE(items_removed, 0), error, started_at, completed_at FROM sync_log ORDER BY started_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
@@ -1003,14 +1226,14 @@ func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryReque
 	var entries []*listsyncv1.SyncLogEntry
 	for rows.Next() {
 		var id, srcID, srcName, status, startedAt string
-		var found, newCount int64
+		var found, newCount, removedCount int64
 		var errStr, completedAt sql.NullString
-		if err := rows.Scan(&id, &srcID, &srcName, &status, &found, &newCount, &errStr, &startedAt, &completedAt); err != nil {
+		if err := rows.Scan(&id, &srcID, &srcName, &status, &found, &newCount, &removedCount, &errStr, &startedAt, &completedAt); err != nil {
 			continue
 		}
 		entries = append(entries, &listsyncv1.SyncLogEntry{
 			Id: id, SourceId: srcID, SourceName: srcName, Status: status,
-			ItemsFound: int32(found), ItemsNew: int32(newCount), Error: errStr.String,
+			ItemsFound: int32(found), ItemsNew: int32(newCount), ItemsRemoved: int32(removedCount), Error: errStr.String,
 			StartedAt: startedAt, CompletedAt: completedAt.String,
 		})
 	}
@@ -1315,21 +1538,22 @@ func (m *Module) storeItems(sourceID string, items []syncItem) int {
 
 	for _, item := range items {
 		id := fmt.Sprintf("si_%d", time.Now().UnixNano()+int64(newCount))
-		_, err := m.db.Exec(`INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		res, err := m.db.Exec(`INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
 			id, sourceID, item.ExternalID, item.TMDBID, item.IMDBID, item.MediaType, item.Title, item.Year,
 			item.SeasonNumber, item.EpisodeNumber, item.Action, now, now)
 		if err == nil {
-			rows, _ := m.db.Exec(`SELECT changes()`)
-			if affected, _ := rows.RowsAffected(); affected > 0 {
+			if affected, _ := res.RowsAffected(); affected > 0 {
 				newCount++
 			}
 		}
+		_, _ = m.db.Exec(`UPDATE sync_items SET tmdb_id = ?, imdb_id = ?, media_type = ?, title = ?, year = ?, season_number = ?, episode_number = ?, action = ?, updated_at = ?, status = CASE WHEN status = 'removed' THEN 'pending' ELSE status END WHERE source_id = ? AND external_id = ?`,
+			item.TMDBID, item.IMDBID, item.MediaType, item.Title, item.Year, item.SeasonNumber, item.EpisodeNumber, item.Action, now, sourceID, item.ExternalID)
 	}
 	return newCount
 }
 
 func (m *Module) loadSources() []*listsyncv1.ListSource {
-	rows, err := m.db.Query(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,'') FROM list_sources ORDER BY name`)
+	rows, err := m.db.Query(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources ORDER BY name`)
 	if err != nil {
 		return nil
 	}
@@ -1338,11 +1562,11 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 	var sources []*listsyncv1.ListSource
 	for rows.Next() {
 		var id, name, stype, username, clientID, listURL, createdAt, updatedAt string
-		var baseURL, apiKey, qualityProfileID, rootFolderPath string
-		var enabled int64
+		var baseURL, apiKey, qualityProfileID, rootFolderPath, cleanLibraryLevel, tagIDs, monitorMode, minAvail string
+		var enabled, searchOnAdd int64
 		var interval int64
 		var lastSynced sql.NullString
-		if err := rows.Scan(&id, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath); err != nil {
+		if err := rows.Scan(&id, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath, &cleanLibraryLevel, &tagIDs, &monitorMode, &minAvail, &searchOnAdd); err != nil {
 			continue
 		}
 		sources = append(sources, &listsyncv1.ListSource{
@@ -1352,19 +1576,23 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 			BaseUrl: baseURL, ApiKey: apiKey,
 			QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
+			CleanLibraryLevel: normalizeCleanLibraryLevel(cleanLibraryLevel),
+			TagIds: tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
+			MinimumAvailability: normalizeMinimumAvailability(minAvail),
+			SearchOnAdd: searchOnAdd != 0,
 		})
 	}
 	return sources
 }
 
 func (m *Module) loadSource(id string) *listsyncv1.ListSource {
-	row := m.db.QueryRow(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,'') FROM list_sources WHERE id = ?`, id)
+	row := m.db.QueryRow(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources WHERE id = ?`, id)
 	var srcID, name, stype, username, clientID, listURL, createdAt, updatedAt string
-	var baseURL, apiKey, qualityProfileID, rootFolderPath string
-	var enabled int64
+	var baseURL, apiKey, qualityProfileID, rootFolderPath, cleanLibraryLevel, tagIDs, monitorMode, minAvail string
+	var enabled, searchOnAdd int64
 	var interval int64
 	var lastSynced sql.NullString
-	if err := row.Scan(&srcID, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath); err != nil {
+	if err := row.Scan(&srcID, &name, &stype, &enabled, &username, &clientID, &listURL, &interval, &lastSynced, &createdAt, &updatedAt, &baseURL, &apiKey, &qualityProfileID, &rootFolderPath, &cleanLibraryLevel, &tagIDs, &monitorMode, &minAvail, &searchOnAdd); err != nil {
 		return nil
 	}
 	return &listsyncv1.ListSource{
@@ -1374,6 +1602,10 @@ func (m *Module) loadSource(id string) *listsyncv1.ListSource {
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 		BaseUrl: baseURL, ApiKey: apiKey,
 		QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
+		CleanLibraryLevel: normalizeCleanLibraryLevel(cleanLibraryLevel),
+		TagIds: tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
+		MinimumAvailability: normalizeMinimumAvailability(minAvail),
+		SearchOnAdd: searchOnAdd != 0,
 	}
 }
 

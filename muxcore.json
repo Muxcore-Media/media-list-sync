@@ -1,7 +1,7 @@
 {
   "name": "Media List Sync",
   "description": "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
-  "version": "0.1.7",
+  "version": "0.2.3",
   "author": "MuxCore",
   "roles": [
     "listsync",
@@ -10,11 +10,18 @@
   "capabilities": [
     "media.listsync",
     "importlist.trakt",
+    "importlist.trakt_list",
     "importlist.imdb",
     "importlist.plex",
     "importlist.jellyfin",
     "importlist.radarr",
     "importlist.sonarr",
+    "importlist.radarr_importlist",
+    "importlist.sonarr_importlist",
+    "importlist.stevenlu",
+    "importlist.tmdb_list",
+    "importlist.rss",
+    "importlist.watcharr",
     "settings"
   ],
   "contracts": [],

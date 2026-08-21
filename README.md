@@ -2,6 +2,8 @@
 
 Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr into MuxCore.
 
+Radarr/Sonarr **Import Lists** operator parity is tracked in [`LISTSYNC-PARITY.md`](./LISTSYNC-PARITY.md).
+
 ## Configuration
 
 | Env Var | Default | Description |

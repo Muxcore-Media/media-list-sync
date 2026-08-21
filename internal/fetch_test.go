@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"strings"
 	"testing"
 
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
@@ -143,5 +144,46 @@ func TestYearFromDate(t *testing.T) {
 	}
 	if yearFromDate("") != 0 {
 		t.Fatal("expected 0")
+	}
+}
+
+func TestParseRSSFeed(t *testing.T) {
+	body := []byte(`<?xml version="1.0"?><rss><channel><item>
+		<title>Fight Club (1999)</title>
+		<link>https://www.imdb.com/title/tt0137523/</link>
+		<guid>imdb-tt0137523</guid>
+	</item><item>
+		<title>Breaking Bad</title>
+		<link>https://www.themoviedb.org/tv/1396</link>
+	</item><item>
+		<title>Alien {imdb:tt0078748}</title>
+		<link>https://example.com/alien</link>
+	</item></channel></rss>`)
+	items, err := parseRSSFeed(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	if items[0].IMDBID != "tt0137523" || items[0].MediaType != "movie" {
+		t.Errorf("imdb item: %+v", items[0])
+	}
+	if items[1].TMDBID != 1396 || items[1].MediaType != "tv" {
+		t.Errorf("tmdb item: %+v", items[1])
+	}
+	if items[2].IMDBID != "tt0078748" || items[2].Title != "Alien" {
+		t.Errorf("tagged title item: %+v", items[2])
+	}
+}
+
+func TestTMDBListURL(t *testing.T) {
+	url, kind := tmdbListURL("trending/movie/week", "key")
+	if kind != "movie" || !strings.Contains(url, "/trending/movie/week") {
+		t.Fatalf("unexpected trending url: %s kind=%s", url, kind)
+	}
+	url, kind = tmdbListURL("12345", "key")
+	if kind != "" || !strings.Contains(url, "/list/12345") {
+		t.Fatalf("unexpected list url: %s kind=%s", url, kind)
 	}
 }

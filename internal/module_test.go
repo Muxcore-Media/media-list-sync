@@ -169,6 +169,83 @@ func TestSyncNow(t *testing.T) {
 	}
 }
 
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func TestSyncNowSingleSource(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{Name: "Disabled", Type: "trakt", ClientId: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.UpdateSource(ctx, &listsyncv1.UpdateSourceRequest{Id: added.Source.Id, Name: "Disabled", Enabled: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.SyncNow(ctx, &listsyncv1.SyncNowRequest{SourceId: added.Source.Id})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateSource(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{
+		Name: "Original", Type: "trakt", ClientId: "abc", SyncIntervalMinutes: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := m.UpdateSource(ctx, &listsyncv1.UpdateSourceRequest{
+		Id: added.Source.Id, Name: "Renamed", ClientId: "xyz", SyncIntervalMinutes: 30, Enabled: boolPtr(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Source.Name != "Renamed" {
+		t.Errorf("expected Renamed, got %s", updated.Source.Name)
+	}
+	if updated.Source.ClientId != "xyz" {
+		t.Errorf("expected xyz, got %s", updated.Source.ClientId)
+	}
+	if updated.Source.SyncIntervalMinutes != 30 {
+		t.Errorf("expected interval 30, got %d", updated.Source.SyncIntervalMinutes)
+	}
+}
+
+func TestTestSourceMissingType(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	resp, err := m.TestSource(ctx, &listsyncv1.TestSourceRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetOk() {
+		t.Fatal("expected test failure for empty probe")
+	}
+}
+
+func TestTestSourceTraktMissingCredentials(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	resp, err := m.TestSource(ctx, &listsyncv1.TestSourceRequest{Type: "trakt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetOk() {
+		t.Fatal("expected test failure without credentials")
+	}
+}
+
 func TestStoreItems(t *testing.T) {
 	m := newTestModule(t)
 
@@ -377,7 +454,7 @@ func TestQueueMissingMonitoredEpisodes(t *testing.T) {
 
 func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
 	m := newTestModule(t)
-	src := &listsyncv1.ListSource{Id: "src_tv"}
+	src := &listsyncv1.ListSource{Id: "src_tv", SearchOnAdd: true}
 	m.storeItems(src.Id, []syncItem{{
 		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist",
 	}})
@@ -409,6 +486,54 @@ func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for missing-episode queue")
+	}
+}
+
+func TestSearchOnAddDisabledSkipsMissingQueue(t *testing.T) {
+	m := newTestModule(t)
+	src := &listsyncv1.ListSource{Id: "src_tv", SearchOnAdd: false}
+	m.storeItems(src.Id, []syncItem{{
+		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist",
+	}})
+	m.markSyncItemAdded(src.Id, "trakt_tv_1", "tv_1396")
+
+	called := make(chan struct{}, 1)
+	m.listMissingFn = func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return &tvmgmtv1.ListMissingResponse{}, nil
+	}
+
+	m.addItemsToLibrary(src, []syncItem{{
+		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008,
+	}})
+
+	select {
+	case <-called:
+		t.Fatal("expected missing queue to be skipped when search_on_add is false")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestQueueMovieSearch(t *testing.T) {
+	m := newTestModule(t)
+	src := &listsyncv1.ListSource{QualityProfileId: "qp1"}
+	done := make(chan struct{})
+	m.addToQueueFn = func(ctx context.Context, req *automationv1.AddToQueueRequest) error {
+		if req.ItemType != "movie" || req.ItemId != "mv_550" || req.QualityProfileId != "qp1" {
+			t.Errorf("unexpected queue req: %+v", req)
+		}
+		close(done)
+		return nil
+	}
+	m.queueMovieSearch(src, "mv_550", syncItem{TMDBID: 550, Title: "Fight Club", Year: 1999})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for movie search queue")
 	}
 }
 

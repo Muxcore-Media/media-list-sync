@@ -5,7 +5,9 @@ option go_package = "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1;l
 service ListSyncService {
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   rpc AddSource(AddSourceRequest) returns (AddSourceResponse);
+  rpc UpdateSource(UpdateSourceRequest) returns (UpdateSourceResponse);
   rpc RemoveSource(RemoveSourceRequest) returns (RemoveSourceResponse);
+  rpc TestSource(TestSourceRequest) returns (TestSourceResponse);
   rpc SyncNow(SyncNowRequest) returns (SyncNowResponse);
   rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
   rpc GetItems(GetItemsRequest) returns (GetItemsResponse);
@@ -27,6 +29,11 @@ message ListSource {
   string api_key = 13;               // Token / X-Api-Key / Plex token / Trakt Bearer
   string quality_profile_id = 14;    // Passed to AddMovie / AddTVShow
   string root_folder_path = 15;      // Passed to AddMovie / AddTVShow
+  string clean_library_level = 16;   // keep, unmonitor, remove, remove_and_delete
+  string tag_ids = 17;               // comma-separated tag IDs applied on import
+  string monitor_mode = 18;          // all, future, none
+  string minimum_availability = 19;  // announced, inCinemas, released, preDB (movies)
+  bool search_on_add = 20;           // queue automation search after library add
 }
 
 message ListSourcesRequest {}
@@ -43,17 +50,63 @@ message AddSourceRequest {
   string api_key = 8;
   string quality_profile_id = 9;
   string root_folder_path = 10;
+  string clean_library_level = 11;   // default keep
+  string tag_ids = 12;
+  string monitor_mode = 13;          // default all
+  string minimum_availability = 14;  // default released
+  optional bool search_on_add = 15;  // default true when unset
 }
 
 message AddSourceResponse { ListSource source = 1; }
 
+message UpdateSourceRequest {
+  string id = 1;
+  string name = 2;
+  string username = 3;
+  string client_id = 4;
+  string list_url = 5;
+  int32 sync_interval_minutes = 6;
+  string base_url = 7;
+  string api_key = 8;               // empty = keep existing
+  string quality_profile_id = 9;
+  string root_folder_path = 10;
+  optional bool enabled = 11;
+  string clean_library_level = 12;
+  string tag_ids = 13;
+  string monitor_mode = 14;
+  string minimum_availability = 15;
+  optional bool search_on_add = 16;
+}
+
+message UpdateSourceResponse { ListSource source = 1; }
+
+message TestSourceRequest {
+  string source_id = 1;             // test saved source
+  // optional probe fields for add-form test (used when source_id empty)
+  string type = 2;
+  string username = 3;
+  string client_id = 4;
+  string list_url = 5;
+  string base_url = 6;
+  string api_key = 7;
+}
+
+message TestSourceResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 item_count = 3;
+}
+
 message RemoveSourceRequest { string id = 1; }
 message RemoveSourceResponse {}
 
-message SyncNowRequest {}
+message SyncNowRequest {
+  string source_id = 1;   // empty = sync all enabled sources
+}
 message SyncNowResponse {
   int32 items_found = 1;
   int32 items_new = 2;
+  int32 items_removed = 3;
 }
 
 message GetHistoryRequest {
@@ -73,6 +126,7 @@ message SyncLogEntry {
   string status = 4;
   int32 items_found = 5;
   int32 items_new = 6;
+  int32 items_removed = 10;
   string error = 7;
   string started_at = 8;
   string completed_at = 9;

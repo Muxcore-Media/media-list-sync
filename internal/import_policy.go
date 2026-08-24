@@ -11,7 +11,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
-	metadatav1 "github.com/Muxcore-Media/metadata-tmdb/proto/metadatav1"
+	metadatav1 "github.com/Muxcore-Media/contracts-metadata/muxcore/metadata/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

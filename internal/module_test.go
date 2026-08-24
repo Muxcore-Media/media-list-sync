@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 )

@@ -19,12 +19,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	rootsv1 "github.com/Muxcore-Media/media-root-folders/proto/rootsv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
-	metadatav1 "github.com/Muxcore-Media/metadata-tmdb/proto/metadatav1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
+	metadatav1 "github.com/Muxcore-Media/contracts-metadata/muxcore/metadata/v1"
+	musicbrainzv1 "github.com/Muxcore-Media/metadata-musicbrainz/proto/musicbrainzv1"
 	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
@@ -66,6 +68,11 @@ type Module struct {
 
 	maintainerConn   *grpc.ClientConn
 	maintainerClient maintainv1.MaintainerServiceClient
+
+	musicConn         *grpc.ClientConn
+	musicClient       musicv1.MusicManagementServiceClient
+	musicBrainzConn   *grpc.ClientConn
+	musicBrainzClient musicbrainzv1.MusicBrainzServiceClient
 
 	// Optional test hooks for missing-episode queueing (nil = use mesh clients).
 	refreshSeriesFn func(ctx context.Context, seriesID string) error
@@ -124,9 +131,9 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.2.3",
+		Version:      "0.2.4",
 		Roles:       []string{"listsync", "importlist"},
-		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
+		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Last.fm, Radarr, and Sonarr",
 		Author:      "MuxCore",
 		Capabilities: []string{
 			"media.listsync",
@@ -143,6 +150,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 			"importlist.tmdb_list",
 			"importlist.rss",
 			"importlist.watcharr",
+			"importlist.lastfm",
 			"settings",
 		},
 		MinCoreVersion: "0.4.0",
@@ -238,6 +246,7 @@ func (m *Module) Init(ctx context.Context) error {
 		_, _ = db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE list_sources ADD COLUMN %s %s`, col.name, col.def))
 	}
 	_, _ = db.ExecContext(ctx, `ALTER TABLE sync_log ADD COLUMN items_removed INTEGER DEFAULT 0`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE sync_items ADD COLUMN musicbrainz_id TEXT DEFAULT ''`)
 
 	m.mu.Lock()
 	m.db = db
@@ -550,6 +559,8 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount, rem
 		items, err = m.fetchRSS(source)
 	case "watcharr":
 		items, err = m.fetchWatcharr(source)
+	case "lastfm":
+		items, err = m.fetchLastfm(source)
 	default:
 		err = fmt.Errorf("unknown source type: %s", source.GetType())
 	}
@@ -598,6 +609,33 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 				if matchedID := m.syncItemMatchedID(sourceID, item.ExternalID); matchedID != "" {
 					go m.queueMissingMonitoredEpisodes(matchedID, item)
 				}
+			}
+			continue
+		}
+		if item.MediaType == "music" {
+			if strings.TrimSpace(item.MusicBrainzID) == "" {
+				if resolved, ok := m.resolveMusicBrainz(item); ok {
+					item = resolved
+				}
+			}
+			if strings.TrimSpace(item.Title) == "" {
+				fallback = append(fallback, item)
+				continue
+			}
+			if skip, reason := m.shouldSkipImport(ctx, source, item); skip {
+				m.markSyncItemSkipped(sourceID, item.ExternalID, reason)
+				continue
+			}
+			matchedID, err := m.addLibraryItem(source, item)
+			if err != nil {
+				slog.Debug("music library add failed", "title", item.Title, "error", err)
+				fallback = append(fallback, item)
+				continue
+			}
+			m.applyImportPolicy(ctx, source, item, matchedID)
+			m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
+			if searchOnAdd && matchedID != "" {
+				go m.queueMusicArtistSearch(matchedID, item)
 			}
 			continue
 		}
@@ -839,6 +877,8 @@ func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (s
 			return "", err
 		}
 		return resp.GetSeriesId(), nil
+	case "music":
+		return m.addMusicArtist(source, item)
 	default:
 		return "", fmt.Errorf("unsupported media type %q", item.MediaType)
 	}
@@ -1330,6 +1370,7 @@ type syncItem struct {
 	ExternalID    string
 	IMDBID        string
 	TMDBID        int
+	MusicBrainzID string
 	MediaType     string
 	Title         string
 	Year          int
@@ -1538,16 +1579,16 @@ func (m *Module) storeItems(sourceID string, items []syncItem) int {
 
 	for _, item := range items {
 		id := fmt.Sprintf("si_%d", time.Now().UnixNano()+int64(newCount))
-		res, err := m.db.Exec(`INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
-			id, sourceID, item.ExternalID, item.TMDBID, item.IMDBID, item.MediaType, item.Title, item.Year,
+		res, err := m.db.Exec(`INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, musicbrainz_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+			id, sourceID, item.ExternalID, item.TMDBID, item.IMDBID, item.MusicBrainzID, item.MediaType, item.Title, item.Year,
 			item.SeasonNumber, item.EpisodeNumber, item.Action, now, now)
 		if err == nil {
 			if affected, _ := res.RowsAffected(); affected > 0 {
 				newCount++
 			}
 		}
-		_, _ = m.db.Exec(`UPDATE sync_items SET tmdb_id = ?, imdb_id = ?, media_type = ?, title = ?, year = ?, season_number = ?, episode_number = ?, action = ?, updated_at = ?, status = CASE WHEN status = 'removed' THEN 'pending' ELSE status END WHERE source_id = ? AND external_id = ?`,
-			item.TMDBID, item.IMDBID, item.MediaType, item.Title, item.Year, item.SeasonNumber, item.EpisodeNumber, item.Action, now, sourceID, item.ExternalID)
+		_, _ = m.db.Exec(`UPDATE sync_items SET tmdb_id = ?, imdb_id = ?, musicbrainz_id = ?, media_type = ?, title = ?, year = ?, season_number = ?, episode_number = ?, action = ?, updated_at = ?, status = CASE WHEN status = 'removed' THEN 'pending' ELSE status END WHERE source_id = ? AND external_id = ?`,
+			item.TMDBID, item.IMDBID, item.MusicBrainzID, item.MediaType, item.Title, item.Year, item.SeasonNumber, item.EpisodeNumber, item.Action, now, sourceID, item.ExternalID)
 	}
 	return newCount
 }

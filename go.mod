@@ -1,24 +1,27 @@
 module github.com/Muxcore-Media/media-list-sync
 
-go 1.26.4
+go 1.26.5
 
 require (
-	github.com/Muxcore-Media/core/pkg/contracts v0.5.2
-	github.com/Muxcore-Media/core/sdk/go/client v0.5.2
-	github.com/Muxcore-Media/core/sdk/go/module v0.5.2
-	github.com/Muxcore-Media/media-automation v0.1.5
+	github.com/Muxcore-Media/contracts-automation v0.1.0
+	github.com/Muxcore-Media/contracts-media v0.1.0
+	github.com/Muxcore-Media/contracts-metadata v0.1.0
+	github.com/Muxcore-Media/core/pkg/contracts v0.5.8
+	github.com/Muxcore-Media/core/sdk/go/client v0.5.8
+	github.com/Muxcore-Media/core/sdk/go/module v0.5.8
 	github.com/Muxcore-Media/media-library-maintainer v0.1.12
 	github.com/Muxcore-Media/media-movies v0.1.9
+	github.com/Muxcore-Media/media-music v0.3.0
 	github.com/Muxcore-Media/media-root-folders v0.1.1
 	github.com/Muxcore-Media/media-tvshows v0.1.9
-	github.com/Muxcore-Media/metadata-tmdb v0.1.1
+	github.com/Muxcore-Media/metadata-musicbrainz v0.1.0
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0
 )
 
 require (
-	github.com/Muxcore-Media/core v0.5.2 // indirect
+	github.com/Muxcore-Media/core v0.5.8 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -34,3 +37,15 @@ require (
 )
 
 replace github.com/Muxcore-Media/media-library-maintainer => ../media-library-maintainer
+
+replace github.com/Muxcore-Media/media-music => ../media-music
+
+replace github.com/Muxcore-Media/metadata-musicbrainz => ../metadata-musicbrainz
+
+replace github.com/Muxcore-Media/contracts-scanner => ../contracts-scanner
+
+replace github.com/Muxcore-Media/contracts-automation => ../contracts-automation
+
+replace github.com/Muxcore-Media/contracts-media => ../contracts-media
+
+replace github.com/Muxcore-Media/contracts-metadata => ../contracts-metadata

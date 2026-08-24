@@ -38,6 +38,8 @@ func (m *Module) testSourceConnection(source *listsyncv1.ListSource) (message st
 		return m.testRSS(source)
 	case "watcharr":
 		return m.testWatcharr(source)
+	case "lastfm":
+		return m.testLastfm(source)
 	default:
 		return "", 0, fmt.Errorf("unknown source type: %s", source.GetType())
 	}
@@ -239,6 +241,17 @@ func (m *Module) arrSystemStatus(baseURL, apiKey string) (string, error) {
 		return "unknown", nil
 	}
 	return status.Version, nil
+}
+
+func (m *Module) testLastfm(source *listsyncv1.ListSource) (string, int, error) {
+	if source.GetApiKey() == "" {
+		return "", 0, fmt.Errorf("lastfm api_key required")
+	}
+	items, err := m.fetchLastfm(source)
+	if err != nil {
+		return "", 0, err
+	}
+	return fmt.Sprintf("Last.fm reachable (%d artists)", len(items)), len(items), nil
 }
 
 func probeSourceFromRequest(req *listsyncv1.TestSourceRequest) *listsyncv1.ListSource {

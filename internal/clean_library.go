@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
+	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 )
 
@@ -35,7 +35,7 @@ type trackedSyncItem struct {
 	Status        string
 }
 
-func (m *Module) reconcileRemovedItems(source *listsyncv1.ListSource, current []syncItem) int {
+func (m *Module) reconcileRemovedItems(ctx context.Context, source *listsyncv1.ListSource, current []syncItem) int {
 	present := make(map[string]struct{}, len(current))
 	for _, item := range current {
 		if item.ExternalID == "" {
@@ -45,7 +45,7 @@ func (m *Module) reconcileRemovedItems(source *listsyncv1.ListSource, current []
 	}
 
 	level := normalizeCleanLibraryLevel(source.GetCleanLibraryLevel())
-	stale, err := m.listStaleSyncItems(source.GetId(), present)
+	stale, err := m.listStaleSyncItems(ctx, source.GetId(), present)
 	if err != nil {
 		slog.Warn("list stale sync items failed", "source", source.GetName(), "error", err)
 		return 0
@@ -54,7 +54,7 @@ func (m *Module) reconcileRemovedItems(source *listsyncv1.ListSource, current []
 	removed := 0
 	for _, item := range stale {
 		if item.Status == "added" && item.MatchedItemID != "" && level != cleanLibraryKeep {
-			if err := m.applyCleanLibraryLevel(source, item, level); err != nil {
+			if err := m.applyCleanLibraryLevel(ctx, source, item, level); err != nil {
 				slog.Warn("clean library failed",
 					"source", source.GetName(),
 					"external_id", item.ExternalID,
@@ -63,7 +63,7 @@ func (m *Module) reconcileRemovedItems(source *listsyncv1.ListSource, current []
 				)
 			}
 		}
-		if err := m.markSyncItemRemoved(source.GetId(), item.ExternalID); err != nil {
+		if err := m.markSyncItemRemoved(ctx, source.GetId(), item.ExternalID); err != nil {
 			slog.Warn("mark sync item removed failed", "external_id", item.ExternalID, "error", err)
 			continue
 		}
@@ -72,18 +72,18 @@ func (m *Module) reconcileRemovedItems(source *listsyncv1.ListSource, current []
 	return removed
 }
 
-func (m *Module) listStaleSyncItems(sourceID string, present map[string]struct{}) ([]trackedSyncItem, error) {
+func (m *Module) listStaleSyncItems(ctx context.Context, sourceID string, present map[string]struct{}) ([]trackedSyncItem, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.db == nil {
 		return nil, fmt.Errorf("db not initialized")
 	}
 
-	rows, err := m.db.Query(`SELECT external_id, media_type, matched_item_id, status FROM sync_items WHERE source_id = ? AND status != 'removed'`, sourceID)
+	rows, err := m.db.QueryContext(ctx, `SELECT external_id, media_type, matched_item_id, status FROM sync_items WHERE source_id = ? AND status != 'removed'`, sourceID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stale []trackedSyncItem
 	for rows.Next() {
@@ -99,26 +99,25 @@ func (m *Module) listStaleSyncItems(sourceID string, present map[string]struct{}
 	return stale, rows.Err()
 }
 
-func (m *Module) markSyncItemRemoved(sourceID, externalID string) error {
+func (m *Module) markSyncItemRemoved(ctx context.Context, sourceID, externalID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.db == nil {
 		return fmt.Errorf("db not initialized")
 	}
 	now := timeNowRFC3339()
-	_, err := m.db.Exec(
+	_, err := m.db.ExecContext(ctx,
 		`UPDATE sync_items SET status = 'removed', matched_item_id = '', updated_at = ? WHERE source_id = ? AND external_id = ?`,
 		now, sourceID, externalID,
 	)
 	return err
 }
 
-func (m *Module) applyCleanLibraryLevel(source *listsyncv1.ListSource, item trackedSyncItem, level string) error {
+func (m *Module) applyCleanLibraryLevel(ctx context.Context, source *listsyncv1.ListSource, item trackedSyncItem, level string) error {
 	if m.cleanLibraryItemFn != nil {
 		return m.cleanLibraryItemFn(source, item, level)
 	}
 
-	ctx := context.Background()
 	switch level {
 	case cleanLibraryUnmonitor:
 		return m.unmonitorLibraryItem(ctx, item)

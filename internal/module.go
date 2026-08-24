@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,14 +21,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
+	metadatav1 "github.com/Muxcore-Media/contracts-metadata/muxcore/metadata/v1"
+	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 	rootsv1 "github.com/Muxcore-Media/media-root-folders/proto/rootsv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
-	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
-	metadatav1 "github.com/Muxcore-Media/contracts-metadata/muxcore/metadata/v1"
 	musicbrainzv1 "github.com/Muxcore-Media/metadata-musicbrainz/proto/musicbrainzv1"
-	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/core/sdk/go/client"
@@ -37,54 +38,41 @@ import (
 
 type Module struct {
 	listsyncv1.UnimplementedListSyncServiceServer
-
-	mu    sync.RWMutex
-	cfgMu sync.RWMutex
-	db    *sql.DB
-	mc    *client.Client
-
-	id           string
-	dbPath       string
-	grpcAddr     string
-	pollInterval time.Duration
-	grpcSrv      *grpc.Server
-	grpcLis      net.Listener
-	httpCli      *http.Client
-
-	automationConn   *grpc.ClientConn
-	automationClient automationv1.AutomationServiceClient
-
-	moviesConn   *grpc.ClientConn
-	moviesClient mgmntv1.MovieManagementServiceClient
-	tvConn       *grpc.ClientConn
-	tvClient     tvmgmtv1.TvManagementServiceClient
-
-	metadataConn   *grpc.ClientConn
-	metadataClient metadatav1.MetadataServiceClient
-
-	rootsConn   *grpc.ClientConn
-	rootsClient rootsv1.RootFolderServiceClient
-	rootsListFn func(ctx context.Context, mediaKind string) ([]string, error)
-
-	maintainerConn   *grpc.ClientConn
-	maintainerClient maintainv1.MaintainerServiceClient
-
-	musicConn         *grpc.ClientConn
-	musicClient       musicv1.MusicManagementServiceClient
-	musicBrainzConn   *grpc.ClientConn
-	musicBrainzClient musicbrainzv1.MusicBrainzServiceClient
-
-	// Optional test hooks for missing-episode queueing (nil = use mesh clients).
-	refreshSeriesFn func(ctx context.Context, seriesID string) error
-	listMissingFn   func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error)
-	addToQueueFn    func(ctx context.Context, req *automationv1.AddToQueueRequest) error
-
-	// Optional test hook for clean-library actions (nil = use mesh clients).
-	cleanLibraryItemFn func(source *listsyncv1.ListSource, item trackedSyncItem, level string) error
-
-	checkImportBlockedFn func(ctx context.Context, item syncItem) (blocked bool, reason string)
-	applyImportTagsFn    func(ctx context.Context, item syncItem, libraryID string, tagIDs []string) error
+	grpcLis              net.Listener
+	musicBrainzClient    musicbrainzv1.MusicBrainzServiceClient
+	musicClient          musicv1.MusicManagementServiceClient
+	maintainerClient     maintainv1.MaintainerServiceClient
+	rootsClient          rootsv1.RootFolderServiceClient
+	metadataClient       metadatav1.MetadataServiceClient
+	tvClient             tvmgmtv1.TvManagementServiceClient
+	moviesClient         mgmntv1.MovieManagementServiceClient
+	automationClient     automationv1.AutomationServiceClient
+	metadataConn         *grpc.ClientConn
+	refreshSeriesFn      func(ctx context.Context, seriesID string) error
+	automationConn       *grpc.ClientConn
+	grpcSrv              *grpc.Server
+	moviesConn           *grpc.ClientConn
 	applyMonitorModeFn   func(ctx context.Context, source *listsyncv1.ListSource, item syncItem, libraryID, mode string) error
+	tvConn               *grpc.ClientConn
+	applyImportTagsFn    func(ctx context.Context, item syncItem, libraryID string, tagIDs []string) error
+	checkImportBlockedFn func(ctx context.Context, item syncItem) (blocked bool, reason string)
+	cleanLibraryItemFn   func(source *listsyncv1.ListSource, item trackedSyncItem, level string) error
+	rootsConn            *grpc.ClientConn
+	mc                   *client.Client
+	rootsListFn          func(ctx context.Context, mediaKind string) ([]string, error)
+	maintainerConn       *grpc.ClientConn
+	db                   *sql.DB
+	musicConn            *grpc.ClientConn
+	addToQueueFn         func(ctx context.Context, req *automationv1.AddToQueueRequest) error
+	musicBrainzConn      *grpc.ClientConn
+	listMissingFn        func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error)
+	httpCli              *http.Client
+	id                   string
+	dbPath               string
+	grpcAddr             string
+	pollInterval         time.Duration
+	mu                   sync.RWMutex
+	cfgMu                sync.RWMutex
 }
 
 type Config struct {
@@ -131,7 +119,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.2.4",
+		Version:     "0.2.4",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Last.fm, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -160,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 
 func (m *Module) Init(ctx context.Context) error {
 	dir := filepath.Dir(m.dbPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
 
@@ -170,11 +158,11 @@ func (m *Module) Init(ctx context.Context) error {
 	}
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
-		return fmt.Errorf("enable WAL: %w", err)
+	if _, walErr := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); walErr != nil {
+		_ = db.Close()
+		return fmt.Errorf("enable WAL: %w", walErr)
 	}
-	if _, err := db.ExecContext(ctx, `
+	if _, schemaErr := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS list_sources (
 			id                   TEXT PRIMARY KEY,
 			name                 TEXT NOT NULL,
@@ -188,11 +176,11 @@ func (m *Module) Init(ctx context.Context) error {
 			created_at           TEXT NOT NULL,
 			updated_at           TEXT NOT NULL
 		)
-	`); err != nil {
-		db.Close()
-		return fmt.Errorf("create list_sources: %w", err)
+	`); schemaErr != nil {
+		_ = db.Close()
+		return fmt.Errorf("create list_sources: %w", schemaErr)
 	}
-	if _, err := db.ExecContext(ctx, `
+	if _, itemsErr := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS sync_items (
 			id               TEXT PRIMARY KEY,
 			source_id        TEXT NOT NULL,
@@ -211,11 +199,11 @@ func (m *Module) Init(ctx context.Context) error {
 			updated_at       TEXT NOT NULL,
 			UNIQUE(source_id, external_id)
 		)
-	`); err != nil {
-		db.Close()
-		return fmt.Errorf("create sync_items: %w", err)
+	`); itemsErr != nil {
+		_ = db.Close()
+		return fmt.Errorf("create sync_items: %w", itemsErr)
 	}
-	if _, err := db.ExecContext(ctx, `
+	if _, logErr := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS sync_log (
 			id           TEXT PRIMARY KEY,
 			source_id    TEXT NOT NULL,
@@ -227,9 +215,9 @@ func (m *Module) Init(ctx context.Context) error {
 			started_at   TEXT NOT NULL,
 			completed_at TEXT
 		)
-	`); err != nil {
-		db.Close()
-		return fmt.Errorf("create sync_log: %w", err)
+	`); logErr != nil {
+		_ = db.Close()
+		return fmt.Errorf("create sync_log: %w", logErr)
 	}
 
 	for _, col := range []struct{ name, def string }{
@@ -252,9 +240,9 @@ func (m *Module) Init(ctx context.Context) error {
 	m.db = db
 	m.mu.Unlock()
 
-	lis, err := net.Listen("tcp", m.grpcAddr)
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", m.grpcAddr)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("listen gRPC: %w", err)
 	}
 	m.grpcLis = lis
@@ -274,8 +262,8 @@ func (m *Module) Start(ctx context.Context) error {
 			slog.Error("media-list-sync gRPC error", "error", err)
 		}
 	}()
-	go m.syncLoop()
-	go m.dialCore(context.Background())
+	go m.syncLoop(ctx)
+	go m.dialCore(ctx)
 	return nil
 }
 
@@ -284,16 +272,16 @@ func (m *Module) Stop(ctx context.Context) error {
 		m.grpcSrv.GracefulStop()
 	}
 	if m.automationConn != nil {
-		m.automationConn.Close()
+		_ = m.automationConn.Close()
 	}
 	if m.moviesConn != nil {
-		m.moviesConn.Close()
+		_ = m.moviesConn.Close()
 	}
 	if m.tvConn != nil {
-		m.tvConn.Close()
+		_ = m.tvConn.Close()
 	}
 	if m.metadataConn != nil {
-		m.metadataConn.Close()
+		_ = m.metadataConn.Close()
 	}
 	if m.rootsConn != nil {
 		_ = m.rootsConn.Close()
@@ -302,11 +290,11 @@ func (m *Module) Stop(ctx context.Context) error {
 		_ = m.maintainerConn.Close()
 	}
 	if m.mc != nil {
-		m.mc.Close()
+		_ = m.mc.Close()
 	}
 	m.mu.Lock()
 	if m.db != nil {
-		m.db.Close()
+		_ = m.db.Close()
 		m.db = nil
 	}
 	m.mu.Unlock()
@@ -475,25 +463,30 @@ func dialAddrForModule(moduleID, httpAddr string) string {
 
 // ── Sync Loop ──────────────────────────────────────────────────
 
-func (m *Module) syncLoop() {
+func (m *Module) syncLoop(ctx context.Context) {
 	time.Sleep(10 * time.Second)
-	m.syncAll()
+	m.syncAll(ctx)
 
 	for {
 		d := m.getPollInterval()
 		timer := time.NewTimer(d)
-		<-timer.C
-		m.syncAll()
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			m.syncAll(ctx)
+		}
 	}
 }
 
-func (m *Module) syncAll() (found, newItems, removed int) {
-	return m.syncAllForced(false)
+func (m *Module) syncAll(ctx context.Context) (found, newItems, removed int) {
+	return m.syncAllForced(ctx, false)
 }
 
-func (m *Module) syncAllForced(force bool) (found, newItems, removed int) {
+func (m *Module) syncAllForced(ctx context.Context, force bool) (found, newItems, removed int) {
 	m.mu.RLock()
-	sources := m.loadSources()
+	sources := m.loadSources(ctx)
 	m.mu.RUnlock()
 
 	for _, s := range sources {
@@ -512,7 +505,7 @@ func (m *Module) syncAllForced(force bool) (found, newItems, removed int) {
 				}
 			}
 		}
-		f, n, r := m.syncSource(s)
+		f, n, r := m.syncSource(ctx, s)
 		found += f
 		newItems += n
 		removed += r
@@ -520,12 +513,12 @@ func (m *Module) syncAllForced(force bool) (found, newItems, removed int) {
 	return found, newItems, removed
 }
 
-func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount, removedCount int) {
+func (m *Module) syncSource(ctx context.Context, source *listsyncv1.ListSource) (found, newCount, removedCount int) {
 	logID := fmt.Sprintf("log_%d", time.Now().UnixNano())
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	m.mu.Lock()
-	m.db.Exec(`INSERT INTO sync_log (id, source_id, source_name, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
+	_, _ = m.db.ExecContext(ctx, `INSERT INTO sync_log (id, source_id, source_name, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
 		logID, source.GetId(), source.GetName(), now)
 	m.mu.Unlock()
 
@@ -534,41 +527,41 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount, rem
 
 	switch source.GetType() {
 	case "trakt":
-		items, err = m.fetchTrakt(source)
+		items, err = m.fetchTrakt(ctx, source)
 	case "imdb":
-		items, err = m.fetchIMDb(source)
+		items, err = m.fetchIMDb(ctx, source)
 	case "plex":
-		items, err = m.fetchPlex(source)
+		items, err = m.fetchPlex(ctx, source)
 	case "jellyfin":
-		items, err = m.fetchJellyfin(source)
+		items, err = m.fetchJellyfin(ctx, source)
 	case "radarr":
-		items, err = m.fetchRadarr(source)
+		items, err = m.fetchRadarr(ctx, source)
 	case "sonarr":
-		items, err = m.fetchSonarr(source)
+		items, err = m.fetchSonarr(ctx, source)
 	case "radarr_importlist":
-		items, err = m.fetchRadarrImportList(source)
+		items, err = m.fetchRadarrImportList(ctx, source)
 	case "sonarr_importlist":
-		items, err = m.fetchSonarrImportList(source)
+		items, err = m.fetchSonarrImportList(ctx, source)
 	case "trakt_list":
-		items, err = m.fetchTraktList(source)
+		items, err = m.fetchTraktList(ctx, source)
 	case "stevenlu":
-		items, err = m.fetchStevenLu(source)
+		items, err = m.fetchStevenLu(ctx, source)
 	case "tmdb_list":
-		items, err = m.fetchTMDBList(source)
+		items, err = m.fetchTMDBList(ctx, source)
 	case "rss":
-		items, err = m.fetchRSS(source)
+		items, err = m.fetchRSS(ctx, source)
 	case "watcharr":
-		items, err = m.fetchWatcharr(source)
+		items, err = m.fetchWatcharr(ctx, source)
 	case "lastfm":
-		items, err = m.fetchLastfm(source)
+		items, err = m.fetchLastfm(ctx, source)
 	default:
 		err = fmt.Errorf("unknown source type: %s", source.GetType())
 	}
 
 	if err == nil {
-		newCount = m.storeItems(source.GetId(), items)
+		newCount = m.storeItems(ctx, source.GetId(), items)
 		found = len(items)
-		removedCount = m.reconcileRemovedItems(source, items)
+		removedCount = m.reconcileRemovedItems(ctx, source, items)
 	}
 
 	completed := time.Now().UTC().Format(time.RFC3339)
@@ -581,40 +574,39 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount, rem
 	}
 
 	m.mu.Lock()
-	m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, items_removed = ?, error = ?, completed_at = ? WHERE id = ?`,
+	_, _ = m.db.ExecContext(ctx, `UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, items_removed = ?, error = ?, completed_at = ? WHERE id = ?`,
 		status, found, newCount, removedCount, errStr, completed, logID)
-	m.db.Exec(`UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
+	_, _ = m.db.ExecContext(ctx, `UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
 	m.mu.Unlock()
 
 	if err == nil {
 		if len(items) > 0 {
-			m.addItemsToLibrary(source, items)
+			m.addItemsToLibrary(ctx, source, items)
 		}
-		m.publishImportListSynced(source, found, newCount, removedCount)
+		m.publishImportListSynced(ctx, source, found, newCount, removedCount)
 	}
 
 	slog.Info("sync completed", "source", source.GetName(), "found", found, "new", newCount, "removed", removedCount)
 	return found, newCount, removedCount
 }
 
-func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncItem) {
+func (m *Module) addItemsToLibrary(ctx context.Context, source *listsyncv1.ListSource, items []syncItem) {
 	sourceID := source.GetId()
-	ctx := context.Background()
 	monitorNone := normalizeMonitorMode(source.GetMonitorMode()) == monitorModeNone
 	searchOnAdd := sourceSearchOnAdd(source)
 	var fallback []syncItem
 	for _, item := range items {
-		if m.syncItemStatus(sourceID, item.ExternalID) == "added" {
+		if m.syncItemStatus(ctx, sourceID, item.ExternalID) == "added" {
 			if searchOnAdd && item.MediaType == "tv" && !monitorNone {
-				if matchedID := m.syncItemMatchedID(sourceID, item.ExternalID); matchedID != "" {
-					go m.queueMissingMonitoredEpisodes(matchedID, item)
+				if matchedID := m.syncItemMatchedID(ctx, sourceID, item.ExternalID); matchedID != "" {
+					go m.queueMissingMonitoredEpisodes(ctx, matchedID, item)
 				}
 			}
 			continue
 		}
 		if item.MediaType == "music" {
 			if strings.TrimSpace(item.MusicBrainzID) == "" {
-				if resolved, ok := m.resolveMusicBrainz(item); ok {
+				if resolved, ok := m.resolveMusicBrainz(ctx, item); ok {
 					item = resolved
 				}
 			}
@@ -623,24 +615,24 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 				continue
 			}
 			if skip, reason := m.shouldSkipImport(ctx, source, item); skip {
-				m.markSyncItemSkipped(sourceID, item.ExternalID, reason)
+				m.markSyncItemSkipped(ctx, sourceID, item.ExternalID, reason)
 				continue
 			}
-			matchedID, err := m.addLibraryItem(source, item)
+			matchedID, err := m.addLibraryItem(ctx, source, item)
 			if err != nil {
 				slog.Debug("music library add failed", "title", item.Title, "error", err)
 				fallback = append(fallback, item)
 				continue
 			}
 			m.applyImportPolicy(ctx, source, item, matchedID)
-			m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
+			m.markSyncItemAdded(ctx, sourceID, item.ExternalID, matchedID)
 			if searchOnAdd && matchedID != "" {
-				go m.queueMusicArtistSearch(matchedID, item)
+				go m.queueMusicArtistSearch(ctx, matchedID, item)
 			}
 			continue
 		}
 		if item.TMDBID <= 0 {
-			if resolved, ok := m.resolveTMDB(item); ok {
+			if resolved, ok := m.resolveTMDB(ctx, item); ok {
 				item = resolved
 			}
 		}
@@ -649,66 +641,65 @@ func (m *Module) addItemsToLibrary(source *listsyncv1.ListSource, items []syncIt
 			continue
 		}
 		if skip, reason := m.shouldSkipImport(ctx, source, item); skip {
-			m.markSyncItemSkipped(sourceID, item.ExternalID, reason)
+			m.markSyncItemSkipped(ctx, sourceID, item.ExternalID, reason)
 			continue
 		}
-		matchedID, err := m.addLibraryItem(source, item)
+		matchedID, err := m.addLibraryItem(ctx, source, item)
 		if err != nil {
 			slog.Debug("library add failed", "title", item.Title, "error", err)
 			fallback = append(fallback, item)
 			continue
 		}
 		m.applyImportPolicy(ctx, source, item, matchedID)
-		m.markSyncItemAdded(sourceID, item.ExternalID, matchedID)
+		m.markSyncItemAdded(ctx, sourceID, item.ExternalID, matchedID)
 		if searchOnAdd && matchedID != "" {
 			switch item.MediaType {
 			case "tv":
 				if !monitorNone {
-					go m.queueMissingMonitoredEpisodes(matchedID, item)
+					go m.queueMissingMonitoredEpisodes(ctx, matchedID, item)
 				}
 			case "movie":
-				go m.queueMovieSearch(source, matchedID, item)
+				go m.queueMovieSearch(ctx, source, matchedID, item)
 			}
 		}
 	}
 	if len(fallback) > 0 {
-		m.queueWithAutomation(fallback)
+		m.queueWithAutomation(ctx, fallback)
 	}
 }
 
-func (m *Module) syncItemStatus(sourceID, externalID string) string {
+func (m *Module) syncItemStatus(ctx context.Context, sourceID, externalID string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.db == nil {
 		return ""
 	}
 	var status string
-	_ = m.db.QueryRow(
+	_ = m.db.QueryRowContext(ctx,
 		`SELECT status FROM sync_items WHERE source_id = ? AND external_id = ?`,
 		sourceID, externalID,
 	).Scan(&status)
 	return status
 }
 
-func (m *Module) syncItemMatchedID(sourceID, externalID string) string {
+func (m *Module) syncItemMatchedID(ctx context.Context, sourceID, externalID string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.db == nil {
 		return ""
 	}
 	var matched string
-	_ = m.db.QueryRow(
+	_ = m.db.QueryRowContext(ctx,
 		`SELECT matched_item_id FROM sync_items WHERE source_id = ? AND external_id = ?`,
 		sourceID, externalID,
 	).Scan(&matched)
 	return matched
 }
 
-func (m *Module) resolveTMDB(item syncItem) (syncItem, bool) {
+func (m *Module) resolveTMDB(ctx context.Context, item syncItem) (syncItem, bool) {
 	if item.IMDBID == "" {
 		return item, false
 	}
-	ctx := context.Background()
 	if err := m.ensureMetadata(ctx); err != nil {
 		slog.Debug("metadata unavailable for resolve", "error", err)
 		return item, false
@@ -723,7 +714,7 @@ func (m *Module) resolveTMDB(item syncItem) (syncItem, bool) {
 	})
 	if err != nil || len(resp.GetResults()) == 0 {
 		if item.Title != "" {
-			return m.resolveViaSearch(item)
+			return m.resolveViaSearch(ctx, item)
 		}
 		return item, false
 	}
@@ -770,12 +761,11 @@ func (m *Module) resolveTMDB(item syncItem) (syncItem, bool) {
 			item.MediaType = "movie"
 		}
 	}
-	m.updateSyncItemTMDB(item)
+	m.updateSyncItemTMDB(ctx, item)
 	return item, true
 }
 
-func (m *Module) resolveViaSearch(item syncItem) (syncItem, bool) {
-	ctx := context.Background()
+func (m *Module) resolveViaSearch(ctx context.Context, item syncItem) (syncItem, bool) {
 	m.mu.RLock()
 	mc := m.metadataClient
 	m.mu.RUnlock()
@@ -793,7 +783,7 @@ func (m *Module) resolveViaSearch(item syncItem) (syncItem, bool) {
 		Query: item.Title,
 		Type:  mediaType,
 		Page:  1,
-		Year:  int32(item.Year),
+		Year:  clampInt32FromInt(item.Year),
 	})
 	if err != nil || len(resp.GetResults()) == 0 {
 		return item, false
@@ -812,7 +802,7 @@ func (m *Module) resolveViaSearch(item syncItem) (syncItem, bool) {
 		}
 	}
 	item.TMDBID = int(pick.GetId())
-	m.updateSyncItemTMDB(item)
+	m.updateSyncItemTMDB(ctx, item)
 	return item, true
 }
 
@@ -820,26 +810,24 @@ func yearFromDate(s string) int {
 	if len(s) < 4 {
 		return 0
 	}
-	var y int
-	fmt.Sscanf(s[:4], "%d", &y)
+	y, _ := strconv.Atoi(s[:4])
 	return y
 }
 
-func (m *Module) updateSyncItemTMDB(item syncItem) {
+func (m *Module) updateSyncItemTMDB(ctx context.Context, item syncItem) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.db == nil {
 		return
 	}
-	_, _ = m.db.Exec(
+	_, _ = m.db.ExecContext(ctx,
 		`UPDATE sync_items SET tmdb_id = ?, title = ?, year = ?, media_type = ?, updated_at = ? WHERE external_id = ?`,
 		item.TMDBID, item.Title, item.Year, item.MediaType, now, item.ExternalID,
 	)
 }
 
-func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (string, error) {
-	ctx := context.Background()
+func (m *Module) addLibraryItem(ctx context.Context, source *listsyncv1.ListSource, item syncItem) (string, error) {
 	switch item.MediaType {
 	case "movie":
 		if err := m.ensureMovies(ctx); err != nil {
@@ -849,9 +837,9 @@ func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (s
 		mc := m.moviesClient
 		m.mu.RUnlock()
 		resp, err := mc.AddMovie(ctx, &mgmntv1.AddMovieRequest{
-			TmdbId:           int32(item.TMDBID),
+			TmdbId:           clampInt32FromInt(item.TMDBID),
 			Title:            item.Title,
-			Year:             int32(item.Year),
+			Year:             clampInt32FromInt(item.Year),
 			QualityProfileId: source.GetQualityProfileId(),
 			RootFolderPath:   source.GetRootFolderPath(),
 		})
@@ -867,9 +855,9 @@ func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (s
 		tc := m.tvClient
 		m.mu.RUnlock()
 		resp, err := tc.AddTVShow(ctx, &tvmgmtv1.AddTVShowRequest{
-			TmdbId:           int32(item.TMDBID),
+			TmdbId:           clampInt32FromInt(item.TMDBID),
 			Name:             item.Title,
-			Year:             int32(item.Year),
+			Year:             clampInt32FromInt(item.Year),
 			QualityProfileId: source.GetQualityProfileId(),
 			RootFolderPath:   source.GetRootFolderPath(),
 		})
@@ -878,29 +866,29 @@ func (m *Module) addLibraryItem(source *listsyncv1.ListSource, item syncItem) (s
 		}
 		return resp.GetSeriesId(), nil
 	case "music":
-		return m.addMusicArtist(source, item)
+		return m.addMusicArtist(ctx, source, item)
 	default:
 		return "", fmt.Errorf("unsupported media type %q", item.MediaType)
 	}
 }
 
-func (m *Module) markSyncItemAdded(sourceID, externalID, matchedID string) {
+func (m *Module) markSyncItemAdded(ctx context.Context, sourceID, externalID, matchedID string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.db == nil {
 		return
 	}
-	_, _ = m.db.Exec(
+	_, _ = m.db.ExecContext(ctx,
 		`UPDATE sync_items SET status = 'added', matched_item_id = ?, updated_at = ? WHERE source_id = ? AND external_id = ?`,
 		matchedID, now, sourceID, externalID,
 	)
 }
 
-func (m *Module) queueMovieSearch(source *listsyncv1.ListSource, movieID string, item syncItem) {
+func (m *Module) queueMovieSearch(ctx context.Context, source *listsyncv1.ListSource, movieID string, item syncItem) {
 	addQueue := m.addToQueueFn
 	if addQueue == nil {
-		if err := m.ensureAutomation(context.Background()); err != nil {
+		if err := m.ensureAutomation(ctx); err != nil {
 			slog.Debug("automation unavailable for movie search queue", "movie_id", movieID, "error", err)
 			return
 		}
@@ -915,12 +903,12 @@ func (m *Module) queueMovieSearch(source *listsyncv1.ListSource, movieID string,
 			return err
 		}
 	}
-	err := addQueue(context.Background(), &automationv1.AddToQueueRequest{
+	err := addQueue(ctx, &automationv1.AddToQueueRequest{
 		ItemType:         "movie",
 		ItemId:           movieID,
-		TmdbId:           int32(item.TMDBID),
+		TmdbId:           clampInt32FromInt(item.TMDBID),
 		Title:            item.Title,
-		Year:             int32(item.Year),
+		Year:             clampInt32FromInt(item.Year),
 		QualityProfileId: source.GetQualityProfileId(),
 	})
 	if err != nil {
@@ -928,8 +916,8 @@ func (m *Module) queueMovieSearch(source *listsyncv1.ListSource, movieID string,
 	}
 }
 
-func (m *Module) queueWithAutomation(items []syncItem) {
-	if err := m.ensureAutomation(context.Background()); err != nil {
+func (m *Module) queueWithAutomation(ctx context.Context, items []syncItem) {
+	if err := m.ensureAutomation(ctx); err != nil {
 		slog.Debug("automation not available for queueing", "error", err)
 		return
 	}
@@ -938,14 +926,14 @@ func (m *Module) queueWithAutomation(items []syncItem) {
 	m.mu.RUnlock()
 
 	for _, item := range items {
-		_, err := ac.AddToQueue(context.Background(), &automationv1.AddToQueueRequest{
+		_, err := ac.AddToQueue(ctx, &automationv1.AddToQueueRequest{
 			ItemType:      item.MediaType,
 			ItemId:        item.ExternalID,
-			TmdbId:        int32(item.TMDBID),
+			TmdbId:        clampInt32FromInt(item.TMDBID),
 			Title:         item.Title,
-			Year:          int32(item.Year),
-			SeasonNumber:  int32(item.SeasonNumber),
-			EpisodeNumber: int32(item.EpisodeNumber),
+			Year:          clampInt32FromInt(item.Year),
+			SeasonNumber:  clampInt32FromInt(item.SeasonNumber),
+			EpisodeNumber: clampInt32FromInt(item.EpisodeNumber),
 		})
 		if err != nil {
 			slog.Debug("queue item failed", "title", item.Title, "error", err)
@@ -955,9 +943,7 @@ func (m *Module) queueWithAutomation(items []syncItem) {
 
 // queueMissingMonitoredEpisodes refreshes series metadata when needed, then
 // enqueues each missing monitored episode (not just the series row).
-func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem) {
-	ctx := context.Background()
-
+func (m *Module) queueMissingMonitoredEpisodes(ctx context.Context, seriesID string, series syncItem) {
 	refresh := m.refreshSeriesFn
 	listMissing := m.listMissingFn
 	addQueue := m.addToQueueFn
@@ -1020,11 +1006,11 @@ func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem)
 			}
 			tmdbID := ep.GetTmdbId()
 			if tmdbID == 0 {
-				tmdbID = int32(series.TMDBID)
+				tmdbID = clampInt32FromInt(series.TMDBID)
 			}
 			year := ep.GetYear()
 			if year == 0 {
-				year = int32(series.Year)
+				year = clampInt32FromInt(series.Year)
 			}
 			err := addQueue(ctx, &automationv1.AddToQueueRequest{
 				ItemType:         "tv",
@@ -1049,7 +1035,7 @@ func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem)
 			}
 			queued++
 		}
-		if int32(len(resp.GetItems())) < pageSize || page*pageSize >= resp.GetTotal() {
+		if len(resp.GetItems()) < int(pageSize) || page*pageSize >= resp.GetTotal() {
 			break
 		}
 		page++
@@ -1065,7 +1051,7 @@ func (m *Module) queueMissingMonitoredEpisodes(seriesID string, series syncItem)
 func (m *Module) ListSources(ctx context.Context, req *listsyncv1.ListSourcesRequest) (*listsyncv1.ListSourcesResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return &listsyncv1.ListSourcesResponse{Sources: m.loadSources()}, nil
+	return &listsyncv1.ListSourcesResponse{Sources: m.loadSources(ctx)}, nil
 }
 
 func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest) (*listsyncv1.AddSourceResponse, error) {
@@ -1091,7 +1077,7 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 		searchOnAddInt = 1
 	}
 
-	_, err = m.db.Exec(`INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, clean_library_level, tag_ids, monitor_mode, minimum_availability, search_on_add, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = m.db.ExecContext(ctx, `INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, clean_library_level, tag_ids, monitor_mode, minimum_availability, search_on_add, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
 		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), rootPath,
 		normalizeCleanLibraryLevel(req.GetCleanLibraryLevel()), req.GetTagIds(),
@@ -1101,7 +1087,7 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 		return nil, fmt.Errorf("add source: %w", err)
 	}
 
-	return &listsyncv1.AddSourceResponse{Source: m.loadSource(id)}, nil
+	return &listsyncv1.AddSourceResponse{Source: m.loadSource(ctx, id)}, nil
 }
 
 func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceRequest) (*listsyncv1.UpdateSourceResponse, error) {
@@ -1112,7 +1098,7 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	existing := m.loadSource(req.GetId())
+	existing := m.loadSource(ctx, req.GetId())
 	if existing == nil {
 		return nil, fmt.Errorf("source not found: %s", req.GetId())
 	}
@@ -1182,14 +1168,14 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := m.db.Exec(`UPDATE list_sources SET name = ?, enabled = ?, username = ?, client_id = ?, list_url = ?, sync_interval_minutes = ?, base_url = ?, api_key = ?, quality_profile_id = ?, root_folder_path = ?, clean_library_level = ?, tag_ids = ?, monitor_mode = ?, minimum_availability = ?, search_on_add = ?, updated_at = ? WHERE id = ?`,
+	_, err := m.db.ExecContext(ctx, `UPDATE list_sources SET name = ?, enabled = ?, username = ?, client_id = ?, list_url = ?, sync_interval_minutes = ?, base_url = ?, api_key = ?, quality_profile_id = ?, root_folder_path = ?, clean_library_level = ?, tag_ids = ?, monitor_mode = ?, minimum_availability = ?, search_on_add = ?, updated_at = ? WHERE id = ?`,
 		name, enabledInt, req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
 		baseURL, apiKey, req.GetQualityProfileId(), rootPath, cleanLevel, tagIDs, monitorMode, minAvail, searchOnAddInt, now, req.GetId())
 	if err != nil {
 		return nil, fmt.Errorf("update source: %w", err)
 	}
 
-	return &listsyncv1.UpdateSourceResponse{Source: m.loadSource(req.GetId())}, nil
+	return &listsyncv1.UpdateSourceResponse{Source: m.loadSource(ctx, req.GetId())}, nil
 }
 
 func (m *Module) TestSource(ctx context.Context, req *listsyncv1.TestSourceRequest) (*listsyncv1.TestSourceResponse, error) {
@@ -1197,7 +1183,7 @@ func (m *Module) TestSource(ctx context.Context, req *listsyncv1.TestSourceReque
 	var source *listsyncv1.ListSource
 	if id := strings.TrimSpace(req.GetSourceId()); id != "" {
 		m.mu.RLock()
-		source = m.loadSource(id)
+		source = m.loadSource(ctx, id)
 		m.mu.RUnlock()
 		if source == nil {
 			return &listsyncv1.TestSourceResponse{Ok: false, Message: "source not found"}, nil
@@ -1209,35 +1195,35 @@ func (m *Module) TestSource(ctx context.Context, req *listsyncv1.TestSourceReque
 		}
 	}
 
-	msg, count, err := m.testSourceConnection(source)
-	if err != nil {
-		return &listsyncv1.TestSourceResponse{Ok: false, Message: err.Error()}, nil
+	msg, count, connErr := m.testSourceConnection(ctx, source)
+	if connErr != nil {
+		//nolint:nilerr // connection failures are returned in TestSourceResponse.Message
+		return &listsyncv1.TestSourceResponse{Ok: false, Message: connErr.Error()}, nil
 	}
-	return &listsyncv1.TestSourceResponse{Ok: true, Message: msg, ItemCount: int32(count)}, nil
+	return &listsyncv1.TestSourceResponse{Ok: true, Message: msg, ItemCount: clampInt32FromInt(count)}, nil
 }
 
 func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceRequest) (*listsyncv1.RemoveSourceResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.db.Exec(`DELETE FROM sync_items WHERE source_id = ?`, req.GetId())
-	m.db.Exec(`DELETE FROM list_sources WHERE id = ?`, req.GetId())
+	_, _ = m.db.ExecContext(ctx, `DELETE FROM sync_items WHERE source_id = ?`, req.GetId())
+	_, _ = m.db.ExecContext(ctx, `DELETE FROM list_sources WHERE id = ?`, req.GetId())
 	return &listsyncv1.RemoveSourceResponse{}, nil
 }
 
 func (m *Module) SyncNow(ctx context.Context, req *listsyncv1.SyncNowRequest) (*listsyncv1.SyncNowResponse, error) {
-	_ = ctx
 	if id := strings.TrimSpace(req.GetSourceId()); id != "" {
 		m.mu.RLock()
-		source := m.loadSource(id)
+		source := m.loadSource(ctx, id)
 		m.mu.RUnlock()
 		if source == nil {
 			return nil, fmt.Errorf("source not found: %s", id)
 		}
-		found, newItems, removed := m.syncSource(source)
-		return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems), ItemsRemoved: int32(removed)}, nil
+		found, newItems, removed := m.syncSource(ctx, source)
+		return &listsyncv1.SyncNowResponse{ItemsFound: clampInt32FromInt(found), ItemsNew: clampInt32FromInt(newItems), ItemsRemoved: clampInt32FromInt(removed)}, nil
 	}
-	found, newItems, removed := m.syncAllForced(true)
-	return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems), ItemsRemoved: int32(removed)}, nil
+	found, newItems, removed := m.syncAllForced(ctx, true)
+	return &listsyncv1.SyncNowResponse{ItemsFound: clampInt32FromInt(found), ItemsNew: clampInt32FromInt(newItems), ItemsRemoved: clampInt32FromInt(removed)}, nil
 }
 
 func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryRequest) (*listsyncv1.GetHistoryResponse, error) {
@@ -1255,13 +1241,15 @@ func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryReque
 	offset := (page - 1) * pageSize
 
 	var total int
-	m.db.QueryRow(`SELECT COUNT(*) FROM sync_log`).Scan(&total)
+	if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_log`).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count history: %w", err)
+	}
 
-	rows, err := m.db.Query(`SELECT id, source_id, source_name, status, items_found, items_new, COALESCE(items_removed, 0), error, started_at, completed_at FROM sync_log ORDER BY started_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
+	rows, err := m.db.QueryContext(ctx, `SELECT id, source_id, source_name, status, items_found, items_new, COALESCE(items_removed, 0), error, started_at, completed_at FROM sync_log ORDER BY started_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*listsyncv1.SyncLogEntry
 	for rows.Next() {
@@ -1273,12 +1261,12 @@ func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryReque
 		}
 		entries = append(entries, &listsyncv1.SyncLogEntry{
 			Id: id, SourceId: srcID, SourceName: srcName, Status: status,
-			ItemsFound: int32(found), ItemsNew: int32(newCount), ItemsRemoved: int32(removedCount), Error: errStr.String,
+			ItemsFound: clampInt32(found), ItemsNew: clampInt32(newCount), ItemsRemoved: clampInt32(removedCount), Error: errStr.String,
 			StartedAt: startedAt, CompletedAt: completedAt.String,
 		})
 	}
 
-	return &listsyncv1.GetHistoryResponse{Entries: entries, Total: int32(total)}, nil
+	return &listsyncv1.GetHistoryResponse{Entries: entries, Total: clampInt32FromInt(total)}, nil
 }
 
 func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) (*listsyncv1.GetItemsResponse, error) {
@@ -1313,20 +1301,23 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 	}
 	if len(where) > 0 {
 		clause := ` WHERE ` + strings.Join(where, ` AND `)
+		//nolint:gosec // clause uses fixed predicates; values are bound via args
 		query += clause
 		countQuery += clause
 	}
 
 	var total int
-	m.db.QueryRow(countQuery, args...).Scan(&total)
+	if err := m.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count items: %w", err)
+	}
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	qargs := append(args, pageSize, offset)
+	args = append(args, pageSize, offset)
 
-	rows, err := m.db.Query(query, qargs...)
+	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var items []*listsyncv1.SyncItem
 	for rows.Next() {
@@ -1335,26 +1326,26 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 			items = append(items, item)
 		}
 	}
-	return &listsyncv1.GetItemsResponse{Items: items, Total: int32(total), Page: int32(page), PageSize: int32(pageSize)}, nil
+	return &listsyncv1.GetItemsResponse{Items: items, Total: clampInt32FromInt(total), Page: clampInt32FromInt(page), PageSize: clampInt32FromInt(pageSize)}, nil
 }
 
 // ── Trakt Integration ──────────────────────────────────────────
 
 type traktIDs struct {
-	Trakt int    `json:"trakt"`
 	IMDb  string `json:"imdb"`
+	Trakt int    `json:"trakt"`
 	TMDB  int    `json:"tmdb"`
 }
 
 type traktMovie struct {
-	IDs   traktIDs `json:"ids"`
 	Title string   `json:"title"`
+	IDs   traktIDs `json:"ids"`
 	Year  int      `json:"year"`
 }
 
 type traktShow struct {
-	IDs   traktIDs `json:"ids"`
 	Title string   `json:"title"`
+	IDs   traktIDs `json:"ids"`
 	Year  int      `json:"year"`
 }
 
@@ -1369,17 +1360,17 @@ type traktWatchlistShow struct {
 type syncItem struct {
 	ExternalID    string
 	IMDBID        string
-	TMDBID        int
 	MusicBrainzID string
 	MediaType     string
 	Title         string
+	Action        string
+	TMDBID        int
 	Year          int
 	SeasonNumber  int
 	EpisodeNumber int
-	Action        string
 }
 
-func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchTrakt(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	clientID := source.GetClientId()
 	if clientID == "" {
 		return nil, fmt.Errorf("trakt client_id not configured for source %s", source.GetName())
@@ -1391,7 +1382,7 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 
 	var items []syncItem
 
-	movies, err := traktGet[traktWatchlistMovie](m.httpCli, clientID, accessToken, "/sync/watchlist/movies")
+	movies, err := traktGet[traktWatchlistMovie](ctx, m.httpCli, clientID, accessToken, "/sync/watchlist/movies")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist movies: %w", err)
 	}
@@ -1411,7 +1402,7 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 		})
 	}
 
-	shows, err := traktGet[traktWatchlistShow](m.httpCli, clientID, accessToken, "/sync/watchlist/shows")
+	shows, err := traktGet[traktWatchlistShow](ctx, m.httpCli, clientID, accessToken, "/sync/watchlist/shows")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist shows: %w", err)
 	}
@@ -1434,9 +1425,9 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 	return items, nil
 }
 
-func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T, error) {
+func traktGet[T any](ctx context.Context, cli *http.Client, clientID, accessToken, path string) ([]T, error) {
 	base := "https://api.trakt.tv"
-	req, err := http.NewRequest("GET", base+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", base+path, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -1449,7 +1440,7 @@ func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1457,7 +1448,7 @@ func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T,
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("trakt API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("trakt API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 
 	var result []T
@@ -1469,7 +1460,7 @@ func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T,
 
 // ── IMDb Integration ───────────────────────────────────────────
 
-func (m *Module) fetchIMDb(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchIMDb(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	listURL := source.GetListUrl()
 	if listURL == "" {
 		return nil, fmt.Errorf("imdb list_url not configured for source %s", source.GetName())
@@ -1484,11 +1475,11 @@ func (m *Module) fetchIMDb(source *listsyncv1.ListSource) ([]syncItem, error) {
 		listURL = fmt.Sprintf("https://www.imdb.com/list/%s/export", strings.TrimPrefix(u.Path, "/list/"))
 	}
 
-	resp, err := m.httpCli.Get(listURL)
+	resp, err := m.httpGet(ctx, listURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch imdb list: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1523,7 +1514,9 @@ func parseIMDbCSV(data string) ([]syncItem, error) {
 
 		if len(fields) > 8 {
 			yearStr := strings.TrimSpace(fields[8])
-			fmt.Sscanf(yearStr, "%d", &year)
+			if y, parseErr := strconv.Atoi(yearStr); parseErr == nil {
+				year = y
+			}
 		}
 
 		mediaType := "movie"
@@ -1566,7 +1559,7 @@ func splitCSVLine(line string) []string {
 
 // ── DB helpers ─────────────────────────────────────────────────
 
-func (m *Module) storeItems(sourceID string, items []syncItem) int {
+func (m *Module) storeItems(ctx context.Context, sourceID string, items []syncItem) int {
 	if len(items) == 0 {
 		return 0
 	}
@@ -1579,7 +1572,7 @@ func (m *Module) storeItems(sourceID string, items []syncItem) int {
 
 	for _, item := range items {
 		id := fmt.Sprintf("si_%d", time.Now().UnixNano()+int64(newCount))
-		res, err := m.db.Exec(`INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, musicbrainz_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		res, err := m.db.ExecContext(ctx, `INSERT OR IGNORE INTO sync_items (id, source_id, external_id, tmdb_id, imdb_id, musicbrainz_id, media_type, title, year, season_number, episode_number, action, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
 			id, sourceID, item.ExternalID, item.TMDBID, item.IMDBID, item.MusicBrainzID, item.MediaType, item.Title, item.Year,
 			item.SeasonNumber, item.EpisodeNumber, item.Action, now, now)
 		if err == nil {
@@ -1587,18 +1580,18 @@ func (m *Module) storeItems(sourceID string, items []syncItem) int {
 				newCount++
 			}
 		}
-		_, _ = m.db.Exec(`UPDATE sync_items SET tmdb_id = ?, imdb_id = ?, musicbrainz_id = ?, media_type = ?, title = ?, year = ?, season_number = ?, episode_number = ?, action = ?, updated_at = ?, status = CASE WHEN status = 'removed' THEN 'pending' ELSE status END WHERE source_id = ? AND external_id = ?`,
+		_, _ = m.db.ExecContext(ctx, `UPDATE sync_items SET tmdb_id = ?, imdb_id = ?, musicbrainz_id = ?, media_type = ?, title = ?, year = ?, season_number = ?, episode_number = ?, action = ?, updated_at = ?, status = CASE WHEN status = 'removed' THEN 'pending' ELSE status END WHERE source_id = ? AND external_id = ?`,
 			item.TMDBID, item.IMDBID, item.MusicBrainzID, item.MediaType, item.Title, item.Year, item.SeasonNumber, item.EpisodeNumber, item.Action, now, sourceID, item.ExternalID)
 	}
 	return newCount
 }
 
-func (m *Module) loadSources() []*listsyncv1.ListSource {
-	rows, err := m.db.Query(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources ORDER BY name`)
+func (m *Module) loadSources(ctx context.Context) []*listsyncv1.ListSource {
+	rows, err := m.db.QueryContext(ctx, `SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources ORDER BY name`)
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sources []*listsyncv1.ListSource
 	for rows.Next() {
@@ -1613,21 +1606,21 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 		sources = append(sources, &listsyncv1.ListSource{
 			Id: id, Name: name, Type: stype, Enabled: enabled != 0,
 			Username: username, ClientId: clientID, ListUrl: listURL,
-			SyncIntervalMinutes: int32(interval), LastSynced: lastSynced.String,
+			SyncIntervalMinutes: clampInt32(interval), LastSynced: lastSynced.String,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 			BaseUrl: baseURL, ApiKey: apiKey,
 			QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
 			CleanLibraryLevel: normalizeCleanLibraryLevel(cleanLibraryLevel),
-			TagIds: tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
+			TagIds:            tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
 			MinimumAvailability: normalizeMinimumAvailability(minAvail),
-			SearchOnAdd: searchOnAdd != 0,
+			SearchOnAdd:         searchOnAdd != 0,
 		})
 	}
 	return sources
 }
 
-func (m *Module) loadSource(id string) *listsyncv1.ListSource {
-	row := m.db.QueryRow(`SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources WHERE id = ?`, id)
+func (m *Module) loadSource(ctx context.Context, id string) *listsyncv1.ListSource {
+	row := m.db.QueryRowContext(ctx, `SELECT id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, last_synced, created_at, updated_at, COALESCE(base_url,''), COALESCE(api_key,''), COALESCE(quality_profile_id,''), COALESCE(root_folder_path,''), COALESCE(clean_library_level,'keep'), COALESCE(tag_ids,''), COALESCE(monitor_mode,'all'), COALESCE(minimum_availability,'announced'), COALESCE(search_on_add,1) FROM list_sources WHERE id = ?`, id)
 	var srcID, name, stype, username, clientID, listURL, createdAt, updatedAt string
 	var baseURL, apiKey, qualityProfileID, rootFolderPath, cleanLibraryLevel, tagIDs, monitorMode, minAvail string
 	var enabled, searchOnAdd int64
@@ -1639,14 +1632,14 @@ func (m *Module) loadSource(id string) *listsyncv1.ListSource {
 	return &listsyncv1.ListSource{
 		Id: srcID, Name: name, Type: stype, Enabled: enabled != 0,
 		Username: username, ClientId: clientID, ListUrl: listURL,
-		SyncIntervalMinutes: int32(interval), LastSynced: lastSynced.String,
+		SyncIntervalMinutes: clampInt32(interval), LastSynced: lastSynced.String,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 		BaseUrl: baseURL, ApiKey: apiKey,
 		QualityProfileId: qualityProfileID, RootFolderPath: rootFolderPath,
 		CleanLibraryLevel: normalizeCleanLibraryLevel(cleanLibraryLevel),
-		TagIds: tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
+		TagIds:            tagIDs, MonitorMode: normalizeMonitorMode(monitorMode),
 		MinimumAvailability: normalizeMinimumAvailability(minAvail),
-		SearchOnAdd: searchOnAdd != 0,
+		SearchOnAdd:         searchOnAdd != 0,
 	}
 }
 
@@ -1657,19 +1650,12 @@ func scanSyncItem(rows *sql.Rows) *listsyncv1.SyncItem {
 		return nil
 	}
 	return &listsyncv1.SyncItem{
-		Id: id, SourceId: srcID, ExternalId: extID, TmdbId: int32(tmdbID), ImdbId: imdbID,
-		MediaType: mediaType, Title: title, Year: int32(year),
-		SeasonNumber: int32(seasonNum), EpisodeNumber: int32(epNum),
+		Id: id, SourceId: srcID, ExternalId: extID, TmdbId: clampInt32(tmdbID), ImdbId: imdbID,
+		MediaType: mediaType, Title: title, Year: clampInt32(year),
+		SeasonNumber: clampInt32(seasonNum), EpisodeNumber: clampInt32(epNum),
 		Action: action, Status: status, MatchedItemId: matchedID,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 var _ contracts.Module = (*Module)(nil)

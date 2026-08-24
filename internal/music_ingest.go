@@ -9,9 +9,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
+	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 	musicbrainzv1 "github.com/Muxcore-Media/metadata-musicbrainz/proto/musicbrainzv1"
-	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
 func (m *Module) ensureMusic(ctx context.Context) error {
@@ -63,7 +63,7 @@ func (m *Module) ensureMusicBrainz(ctx context.Context) error {
 	return nil
 }
 
-func (m *Module) resolveMusicBrainz(item syncItem) (syncItem, bool) {
+func (m *Module) resolveMusicBrainz(ctx context.Context, item syncItem) (syncItem, bool) {
 	if strings.TrimSpace(item.MusicBrainzID) != "" {
 		return item, true
 	}
@@ -71,7 +71,6 @@ func (m *Module) resolveMusicBrainz(item syncItem) (syncItem, bool) {
 	if name == "" {
 		return item, false
 	}
-	ctx := context.Background()
 	if err := m.ensureMusicBrainz(ctx); err != nil {
 		return item, false
 	}
@@ -90,8 +89,7 @@ func (m *Module) resolveMusicBrainz(item syncItem) (syncItem, bool) {
 	return item, true
 }
 
-func (m *Module) addMusicArtist(source *listsyncv1.ListSource, item syncItem) (string, error) {
-	ctx := context.Background()
+func (m *Module) addMusicArtist(ctx context.Context, source *listsyncv1.ListSource, item syncItem) (string, error) {
 	if err := m.ensureMusic(ctx); err != nil {
 		return "", err
 	}
@@ -113,11 +111,10 @@ func (m *Module) addMusicArtist(source *listsyncv1.ListSource, item syncItem) (s
 	return artistID, nil
 }
 
-func (m *Module) queueMusicArtistSearch(artistID string, item syncItem) {
+func (m *Module) queueMusicArtistSearch(ctx context.Context, artistID string, item syncItem) {
 	if artistID == "" {
 		return
 	}
-	ctx := context.Background()
 	if err := m.ensureAutomation(ctx); err != nil {
 		return
 	}

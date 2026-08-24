@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,31 +14,31 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchWatcharr(source *listsyncv1.ListSource) ([]syncItem, error) {
-	token, err := m.watcharrAuthToken(source)
+func (m *Module) fetchWatcharr(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
+	token, err := m.watcharrAuthToken(ctx, source)
 	if err != nil {
 		return nil, err
 	}
 	mode, arg := parseWatcharrListURL(source.GetListUrl())
 	switch mode {
 	case "tag":
-		return m.fetchWatcharrPaged(source, token, "/api/tag/"+url.PathEscape(strings.TrimSpace(arg))+"/watched", nil)
+		return m.fetchWatcharrPaged(ctx, source, token, "/api/tag/"+url.PathEscape(strings.TrimSpace(arg))+"/watched", nil)
 	case "public":
 		userID, username, ok := parseWatcharrPublicTarget(arg, source.GetUsername())
 		if !ok {
 			return nil, fmt.Errorf("watcharr public list requires list_url public:<userId>/<username>")
 		}
-		return m.fetchWatcharrPaged(source, token, fmt.Sprintf("/api/watched/%d/%s", userID, url.PathEscape(username)), nil)
+		return m.fetchWatcharrPaged(ctx, source, token, fmt.Sprintf("/api/watched/%d/%s", userID, url.PathEscape(username)), nil)
 	default:
 		var q url.Values
 		if mode == "status" && arg != "" {
 			q = url.Values{"status": {arg}}
 		}
-		return m.fetchWatcharrPaged(source, token, "/api/watched", q)
+		return m.fetchWatcharrPaged(ctx, source, token, "/api/watched", q)
 	}
 }
 
-func (m *Module) watcharrAuthToken(source *listsyncv1.ListSource) (string, error) {
+func (m *Module) watcharrAuthToken(ctx context.Context, source *listsyncv1.ListSource) (string, error) {
 	if token := strings.TrimSpace(source.GetApiKey()); token != "" && !looksLikeWatcharrPassword(source) {
 		return token, nil
 	}
@@ -46,7 +47,7 @@ func (m *Module) watcharrAuthToken(source *listsyncv1.ListSource) (string, error
 	if username == "" || password == "" {
 		return "", fmt.Errorf("watcharr requires api_key JWT or username + api_key password for source %s", source.GetName())
 	}
-	return m.watcharrLogin(source, username, password)
+	return m.watcharrLogin(ctx, source, username, password)
 }
 
 func looksLikeWatcharrPassword(source *listsyncv1.ListSource) bool {
@@ -54,7 +55,7 @@ func looksLikeWatcharrPassword(source *listsyncv1.ListSource) bool {
 	return strings.TrimSpace(source.GetUsername()) != "" && strings.TrimSpace(source.GetApiKey()) != ""
 }
 
-func (m *Module) watcharrLogin(source *listsyncv1.ListSource, username, password string) (string, error) {
+func (m *Module) watcharrLogin(ctx context.Context, source *listsyncv1.ListSource, username, password string) (string, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(source.GetBaseUrl()), "/")
 	body, err := json.Marshal(map[string]string{
 		"username": username,
@@ -63,7 +64,7 @@ func (m *Module) watcharrLogin(source *listsyncv1.ListSource, username, password
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/auth/", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/auth/", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -73,13 +74,13 @@ func (m *Module) watcharrLogin(source *listsyncv1.ListSource, username, password
 	if err != nil {
 		return "", fmt.Errorf("watcharr login: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("watcharr login %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 200)]))
+		return "", fmt.Errorf("watcharr login %d: %s", resp.StatusCode, string(respBody[:minInt(len(respBody), 200)]))
 	}
 	var payload struct {
 		Token string `json:"token"`
@@ -134,11 +135,11 @@ func parseWatcharrPublicTarget(arg, fallbackUsername string) (userID int, userna
 	return id, username, true
 }
 
-func (m *Module) fetchWatcharrPaged(source *listsyncv1.ListSource, token, path string, extra url.Values) ([]syncItem, error) {
+func (m *Module) fetchWatcharrPaged(ctx context.Context, source *listsyncv1.ListSource, token, path string, extra url.Values) ([]syncItem, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(source.GetBaseUrl()), "/")
 	// Non-paginated full export when hitting /api/watched without filters.
 	if path == "/api/watched" && len(extra) == 0 {
-		body, err := m.watcharrGET(baseURL+path, token)
+		body, err := m.watcharrGET(ctx, baseURL+path, token)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +159,7 @@ func (m *Module) fetchWatcharrPaged(source *listsyncv1.ListSource, token, path s
 		q.Set("page", strconv.Itoa(page))
 		q.Set("limit", strconv.Itoa(pageSize))
 		endpoint := baseURL + path + "?" + q.Encode()
-		body, err := m.watcharrGET(endpoint, token)
+		body, err := m.watcharrGET(ctx, endpoint, token)
 		if err != nil {
 			return nil, err
 		}
@@ -175,8 +176,8 @@ func (m *Module) fetchWatcharrPaged(source *listsyncv1.ListSource, token, path s
 	return out, nil
 }
 
-func (m *Module) watcharrGET(endpoint, token string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+func (m *Module) watcharrGET(ctx context.Context, endpoint, token string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -186,13 +187,13 @@ func (m *Module) watcharrGET(endpoint, token string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("watcharr API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("watcharr API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return body, nil
 }
@@ -217,17 +218,18 @@ func parseWatcharrPagedMedia(body []byte) ([]syncItem, int, error) {
 	return watcharrMediaToSyncItems(payload.Results), payload.TotalPages, nil
 }
 
+//nolint:govet // JSON field order follows Watcharr API schema
 type watcharrMedia struct {
-	Type string `json:"type"`
-	IDs  struct {
+	IDs struct {
 		TMDB int    `json:"tmdb"`
 		IMDB string `json:"imdb"`
 	} `json:"ids"`
-	Name        string `json:"name"`
-	ReleaseDate string `json:"releaseDate"`
-	Watched     struct {
+	Watched struct {
 		ID uint `json:"id"`
 	} `json:"watched"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	ReleaseDate string `json:"releaseDate"`
 }
 
 func watcharrMediaToSyncItems(rows []watcharrMedia) []syncItem {

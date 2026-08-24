@@ -67,9 +67,9 @@ func TestShouldSkipImportBlocked(t *testing.T) {
 
 func TestMarkSyncItemSkipped(t *testing.T) {
 	m := newTestModule(t)
-	m.storeItems("src1", []syncItem{{ExternalID: "x", TMDBID: 1, MediaType: "movie", Title: "X"}})
-	m.markSyncItemSkipped("src1", "x", "import exclusion")
-	if status := m.syncItemStatus("src1", "x"); status != "skipped" {
+	m.storeItems(context.Background(), "src1", []syncItem{{ExternalID: "x", TMDBID: 1, MediaType: "movie", Title: "X"}})
+	m.markSyncItemSkipped(context.Background(), "src1", "x", "import exclusion")
+	if status := m.syncItemStatus(context.Background(), "src1", "x"); status != "skipped" {
 		t.Fatalf("status=%q", status)
 	}
 }

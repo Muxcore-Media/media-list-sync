@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -12,10 +13,10 @@ import (
 )
 
 var (
-	rssIMDBPattern = regexp.MustCompile(`(?i)\b(tt\d{7,8})\b`)
-	rssTMDBPattern = regexp.MustCompile(`(?i)themoviedb\.org/(?:movie|tv)/(\d+)`)
-	rssIMDBTagPattern = regexp.MustCompile(`(?i)\{?\s*imdb\s*:\s*(tt\d{7,8})\s*\}?`)
-	rssTMDBTagPattern = regexp.MustCompile(`(?i)\{?\s*tmdb\s*:\s*(\d+)\s*\}?`)
+	rssIMDBPattern     = regexp.MustCompile(`(?i)\b(tt\d{7,8})\b`)
+	rssTMDBPattern     = regexp.MustCompile(`(?i)themoviedb\.org/(?:movie|tv)/(\d+)`)
+	rssIMDBTagPattern  = regexp.MustCompile(`(?i)\{?\s*imdb\s*:\s*(tt\d{7,8})\s*\}?`)
+	rssTMDBTagPattern  = regexp.MustCompile(`(?i)\{?\s*tmdb\s*:\s*(\d+)\s*\}?`)
 	rssTitleTagPattern = regexp.MustCompile(`(?i)\{(?:imdb|tmdb)\s*:[^}]+\}`)
 )
 
@@ -34,7 +35,7 @@ type rssItem struct {
 	GUID        string `xml:"guid"`
 }
 
-func (m *Module) fetchRSS(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchRSS(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	feedURL := strings.TrimSpace(source.GetListUrl())
 	if feedURL == "" {
 		feedURL = strings.TrimSpace(source.GetBaseUrl())
@@ -42,17 +43,17 @@ func (m *Module) fetchRSS(source *listsyncv1.ListSource) ([]syncItem, error) {
 	if feedURL == "" {
 		return nil, fmt.Errorf("rss feed url required in list_url for source %s", source.GetName())
 	}
-	resp, err := m.httpCli.Get(feedURL)
+	resp, err := m.httpGet(ctx, feedURL)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("rss feed %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("rss feed %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return parseRSSFeed(body)
 }

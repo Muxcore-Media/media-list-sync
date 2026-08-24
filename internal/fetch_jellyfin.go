@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchJellyfin(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchJellyfin(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	baseURL := strings.TrimRight(source.GetBaseUrl(), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("jellyfin base_url not configured for source %s", source.GetName())
@@ -38,35 +39,35 @@ func (m *Module) fetchJellyfin(source *listsyncv1.ListSource) ([]syncItem, error
 		endpoint = fmt.Sprintf("%s/Users/%s/Items?%s", baseURL, url.PathEscape(userID), q.Encode())
 	}
 
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", fmt.Sprintf(`MediaBrowser Token="%s"`, apiKey))
+	req.Header.Set("Authorization", fmt.Sprintf(`MediaBrowser Token=%q`, apiKey))
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := m.httpCli.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("jellyfin fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("jellyfin API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("jellyfin API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return parseJellyfinItems(body)
 }
 
 func parseJellyfinItems(body []byte) ([]syncItem, error) {
 	type jfItem struct {
+		ProviderIds    map[string]string `json:"ProviderIds"`
 		ID             string            `json:"Id"`
 		Name           string            `json:"Name"`
 		Type           string            `json:"Type"`
 		ProductionYear int               `json:"ProductionYear"`
-		ProviderIds    map[string]string `json:"ProviderIds"`
 	}
 	var raw struct {
 		Items []jfItem `json:"Items"`

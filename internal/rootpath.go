@@ -55,7 +55,8 @@ func (m *Module) listRegisteredRootPaths(ctx context.Context, mediaKind string) 
 		}
 		return paths, true, nil
 	}
-	if err := m.ensureRoots(ctx); err != nil {
+	if rootsErr := m.ensureRoots(ctx); rootsErr != nil {
+		//nolint:nilerr // unreachable roots service skips validation
 		return nil, false, nil
 	}
 	m.mu.RLock()
@@ -64,8 +65,9 @@ func (m *Module) listRegisteredRootPaths(ctx context.Context, mediaKind string) 
 	if cli == nil {
 		return nil, false, nil
 	}
-	resp, err := cli.ListRoots(ctx, &rootsv1.ListRootsRequest{MediaKind: mediaKind})
-	if err != nil {
+	resp, listErr := cli.ListRoots(ctx, &rootsv1.ListRootsRequest{MediaKind: mediaKind})
+	if listErr != nil {
+		//nolint:nilerr // roots list failure skips validation
 		return nil, false, nil
 	}
 	out := make([]string, 0, len(resp.GetRoots()))

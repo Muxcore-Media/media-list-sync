@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
-	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
-	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
-	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 	metadatav1 "github.com/Muxcore-Media/contracts-metadata/muxcore/metadata/v1"
+	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
+	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
+	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -22,10 +22,10 @@ const (
 	monitorModeFuture = "future"
 	monitorModeNone   = "none"
 
-	minAvailAnnounced  = "announced"
-	minAvailInCinemas  = "incinemas"
-	minAvailReleased   = "released"
-	minAvailPreDB      = "predb"
+	minAvailAnnounced = "announced"
+	minAvailInCinemas = "incinemas"
+	minAvailReleased  = "released"
+	minAvailPreDB     = "predb"
 )
 
 func normalizeMonitorMode(mode string) string {
@@ -90,7 +90,7 @@ func (m *Module) checkImportBlocked(ctx context.Context, item syncItem) (bool, s
 	}
 	resp, err := client.CheckImportBlocked(ctx, &maintainv1.CheckImportBlockedRequest{
 		Scope:  scope,
-		TmdbId: int32(item.TMDBID),
+		TmdbId: clampInt32FromInt(item.TMDBID),
 	})
 	if err != nil {
 		slog.Debug("maintainer CheckImportBlocked failed", "error", err)
@@ -123,13 +123,13 @@ func (m *Module) meetsMinimumAvailability(ctx context.Context, source *listsyncv
 
 	switch item.MediaType {
 	case "movie":
-		resp, err := mc.GetMovieDetails(ctx, &metadatav1.GetMovieDetailsRequest{TmdbId: int32(item.TMDBID)})
+		resp, err := mc.GetMovieDetails(ctx, &metadatav1.GetMovieDetailsRequest{TmdbId: clampInt32FromInt(item.TMDBID)})
 		if err != nil {
 			return true, ""
 		}
 		return movieMeetsAvailability(level, resp.GetReleaseDate(), resp.GetStatus()), "minimum availability"
 	case "tv":
-		resp, err := mc.GetTVDetails(ctx, &metadatav1.GetTVDetailsRequest{TmdbId: int32(item.TMDBID)})
+		resp, err := mc.GetTVDetails(ctx, &metadatav1.GetTVDetailsRequest{TmdbId: clampInt32FromInt(item.TMDBID)})
 		if err != nil {
 			return true, ""
 		}
@@ -295,11 +295,11 @@ func (m *Module) applyTVFutureMonitor(ctx context.Context, seriesID string) erro
 		}
 		if pastSeason && len(season.GetEpisodes()) > 0 {
 			mon := false
-			if _, err := tc.UpdateSeasonMonitored(ctx, &tvmgmtv1.UpdateSeasonMonitoredRequest{
+			if _, seasonErr := tc.UpdateSeasonMonitored(ctx, &tvmgmtv1.UpdateSeasonMonitoredRequest{
 				SeasonId:  season.GetId(),
 				Monitored: mon,
-			}); err != nil {
-				return err
+			}); seasonErr != nil {
+				return seasonErr
 			}
 		}
 	}
@@ -331,14 +331,14 @@ func (m *Module) ensureMaintainer(ctx context.Context) error {
 	return nil
 }
 
-func (m *Module) markSyncItemSkipped(sourceID, externalID, reason string) {
+func (m *Module) markSyncItemSkipped(ctx context.Context, sourceID, externalID, reason string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.db == nil {
 		return
 	}
-	_, _ = m.db.Exec(
+	_, _ = m.db.ExecContext(ctx,
 		`UPDATE sync_items SET status = 'skipped', matched_item_id = '', updated_at = ? WHERE source_id = ? AND external_id = ?`,
 		now, sourceID, externalID,
 	)

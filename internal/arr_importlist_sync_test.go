@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestTriggerArrImportListSync(t *testing.T) {
 	m := NewModule(Config{})
 	m.httpCli = srv.Client()
 	source := &listsyncv1.ListSource{BaseUrl: srv.URL, ApiKey: "test-key"}
-	if err := m.triggerArrImportListSync(source); err != nil {
+	if err := m.triggerArrImportListSync(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
 	if commandGET < 2 {

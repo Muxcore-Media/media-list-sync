@@ -74,10 +74,10 @@ func TestFixtureSyncIntoMoviesAndTV(t *testing.T) {
 		{ExternalID: "tt0137523", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999, Action: "watchlist"},
 		{ExternalID: "tt0903747", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist"},
 	}
-	if n := m.storeItems(src.Id, items); n != 2 {
+	if n := m.storeItems(context.Background(), src.Id, items); n != 2 {
 		t.Fatalf("store=%d", n)
 	}
-	m.addItemsToLibrary(src, items)
+	m.addItemsToLibrary(context.Background(), src, items)
 
 	if len(movies.adds) != 1 || movies.adds[0] != 550 {
 		t.Fatalf("movies adds: %v", movies.adds)
@@ -85,10 +85,10 @@ func TestFixtureSyncIntoMoviesAndTV(t *testing.T) {
 	if len(tv.adds) != 1 || tv.adds[0] != 1396 {
 		t.Fatalf("tv adds: %v", tv.adds)
 	}
-	if m.syncItemStatus(src.Id, "tt0137523") != "added" {
+	if m.syncItemStatus(context.Background(), src.Id, "tt0137523") != "added" {
 		t.Fatal("movie not marked added")
 	}
-	if m.syncItemStatus(src.Id, "tt0903747") != "added" {
+	if m.syncItemStatus(context.Background(), src.Id, "tt0903747") != "added" {
 		t.Fatal("tv not marked added")
 	}
 }

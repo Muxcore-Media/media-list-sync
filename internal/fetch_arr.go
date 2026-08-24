@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +11,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchRadarr(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchRadarr(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	baseURL := strings.TrimRight(source.GetBaseUrl(), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("radarr base_url not configured for source %s", source.GetName())
@@ -20,7 +21,7 @@ func (m *Module) fetchRadarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 		return nil, fmt.Errorf("radarr api_key not configured for source %s", source.GetName())
 	}
 
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v3/movie", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v3/movie", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -31,24 +32,24 @@ func (m *Module) fetchRadarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 	if err != nil {
 		return nil, fmt.Errorf("radarr fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("radarr API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("radarr API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return parseRadarrMovies(body)
 }
 
 func parseRadarrMovies(body []byte) ([]syncItem, error) {
 	var movies []struct {
-		ID        int    `json:"id"`
 		Title     string `json:"title"`
+		ImdbID    string `json:"imdbId"`
+		ID        int    `json:"id"`
 		Year      int    `json:"year"`
 		TmdbID    int    `json:"tmdbId"`
-		ImdbID    string `json:"imdbId"`
 		Monitored bool   `json:"monitored"`
 	}
 	if err := json.Unmarshal(body, &movies); err != nil {
@@ -73,7 +74,7 @@ func parseRadarrMovies(body []byte) ([]syncItem, error) {
 	return items, nil
 }
 
-func (m *Module) fetchSonarr(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchSonarr(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	baseURL := strings.TrimRight(source.GetBaseUrl(), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("sonarr base_url not configured for source %s", source.GetName())
@@ -83,7 +84,7 @@ func (m *Module) fetchSonarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 		return nil, fmt.Errorf("sonarr api_key not configured for source %s", source.GetName())
 	}
 
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v3/series", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v3/series", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -94,24 +95,24 @@ func (m *Module) fetchSonarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 	if err != nil {
 		return nil, fmt.Errorf("sonarr fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sonarr API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("sonarr API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return parseSonarrSeries(body)
 }
 
 func parseSonarrSeries(body []byte) ([]syncItem, error) {
 	var series []struct {
-		ID        int    `json:"id"`
 		Title     string `json:"title"`
+		ImdbID    string `json:"imdbId"`
+		ID        int    `json:"id"`
 		Year      int    `json:"year"`
 		TmdbID    int    `json:"tmdbId"`
-		ImdbID    string `json:"imdbId"`
 		TvdbID    int    `json:"tvdbId"`
 		Monitored bool   `json:"monitored"`
 	}

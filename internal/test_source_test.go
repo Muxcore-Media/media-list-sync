@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ func TestArrSystemStatus(t *testing.T) {
 	defer srv.Close()
 
 	m := NewModule(Config{})
-	msg, count, err := m.testRadarr(&listsyncv1.ListSource{
+	msg, count, err := m.testRadarr(context.Background(), &listsyncv1.ListSource{
 		BaseUrl: srv.URL,
 		ApiKey:  "secret",
 	})
@@ -45,7 +46,7 @@ func TestArrSystemStatusUnauthorized(t *testing.T) {
 	defer srv.Close()
 
 	m := NewModule(Config{})
-	_, err := m.arrSystemStatus(srv.URL, "bad")
+	_, err := m.arrSystemStatus(context.Background(), srv.URL, "bad")
 	if err == nil {
 		t.Fatal("expected error for unauthorized")
 	}

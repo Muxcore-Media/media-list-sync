@@ -249,7 +249,7 @@ func TestTestSourceTraktMissingCredentials(t *testing.T) {
 func TestStoreItems(t *testing.T) {
 	m := newTestModule(t)
 
-	newCount := m.storeItems("test-source", []syncItem{
+	newCount := m.storeItems(context.Background(), "test-source", []syncItem{
 		{ExternalID: "tt0137523", IMDBID: "tt0137523", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999, Action: "watchlist"},
 		{ExternalID: "tt0903747", IMDBID: "tt0903747", TMDBID: 1668, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist"},
 	})
@@ -258,7 +258,7 @@ func TestStoreItems(t *testing.T) {
 	}
 
 	// Duplicate should be ignored
-	newCount2 := m.storeItems("test-source", []syncItem{
+	newCount2 := m.storeItems(context.Background(), "test-source", []syncItem{
 		{ExternalID: "tt0137523", IMDBID: "tt0137523", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999, Action: "watchlist"},
 	})
 	if newCount2 != 0 {
@@ -359,10 +359,10 @@ func TestMarkSyncItemAdded(t *testing.T) {
 		Year:       1999,
 		Action:     "watchlist",
 	}}
-	if n := m.storeItems(sourceID, items); n != 1 {
+	if n := m.storeItems(context.Background(), sourceID, items); n != 1 {
 		t.Fatalf("expected 1 new item, got %d", n)
 	}
-	m.markSyncItemAdded(sourceID, "trakt_1", "mv_550")
+	m.markSyncItemAdded(context.Background(), sourceID, "trakt_1", "mv_550")
 
 	m.mu.RLock()
 	var status, matched string
@@ -387,7 +387,7 @@ func TestAddItemsToLibraryFallbackNoTMDB(t *testing.T) {
 	src := &listsyncv1.ListSource{Id: "src"}
 	// No mesh client / library modules: items with TMDB fail add and fall back;
 	// items without TMDB go straight to automation fallback (also no-op without mesh).
-	m.addItemsToLibrary(src, []syncItem{
+	m.addItemsToLibrary(context.Background(), src, []syncItem{
 		{ExternalID: "x1", TMDBID: 0, MediaType: "movie", Title: "Unknown"},
 		{ExternalID: "x2", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999},
 	})
@@ -396,11 +396,11 @@ func TestAddItemsToLibraryFallbackNoTMDB(t *testing.T) {
 func TestAddItemsToLibrarySkipsAlreadyAdded(t *testing.T) {
 	m := newTestModule(t)
 	src := &listsyncv1.ListSource{Id: "src1"}
-	m.storeItems(src.Id, []syncItem{{
+	m.storeItems(context.Background(), src.Id, []syncItem{{
 		ExternalID: "trakt_1", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999, Action: "watchlist",
 	}})
-	m.markSyncItemAdded(src.Id, "trakt_1", "mv_550")
-	m.addItemsToLibrary(src, []syncItem{{
+	m.markSyncItemAdded(context.Background(), src.Id, "trakt_1", "mv_550")
+	m.addItemsToLibrary(context.Background(), src, []syncItem{{
 		ExternalID: "trakt_1", TMDBID: 550, MediaType: "movie", Title: "Fight Club", Year: 1999,
 	}})
 }
@@ -431,7 +431,7 @@ func TestQueueMissingMonitoredEpisodes(t *testing.T) {
 		return nil
 	}
 
-	m.queueMissingMonitoredEpisodes("tv_1396", syncItem{
+	m.queueMissingMonitoredEpisodes(context.Background(), "tv_1396", syncItem{
 		MediaType: "tv", TMDBID: 1396, Title: "Breaking Bad", Year: 2008,
 	})
 
@@ -455,10 +455,10 @@ func TestQueueMissingMonitoredEpisodes(t *testing.T) {
 func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
 	m := newTestModule(t)
 	src := &listsyncv1.ListSource{Id: "src_tv", SearchOnAdd: true}
-	m.storeItems(src.Id, []syncItem{{
+	m.storeItems(context.Background(), src.Id, []syncItem{{
 		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist",
 	}})
-	m.markSyncItemAdded(src.Id, "trakt_tv_1", "tv_1396")
+	m.markSyncItemAdded(context.Background(), src.Id, "trakt_tv_1", "tv_1396")
 
 	done := make(chan struct{})
 	m.refreshSeriesFn = func(ctx context.Context, seriesID string) error { return nil }
@@ -478,7 +478,7 @@ func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
 		return nil
 	}
 
-	m.addItemsToLibrary(src, []syncItem{{
+	m.addItemsToLibrary(context.Background(), src, []syncItem{{
 		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008,
 	}})
 
@@ -492,10 +492,10 @@ func TestAddItemsToLibraryQueuesMissingForAddedSeries(t *testing.T) {
 func TestSearchOnAddDisabledSkipsMissingQueue(t *testing.T) {
 	m := newTestModule(t)
 	src := &listsyncv1.ListSource{Id: "src_tv", SearchOnAdd: false}
-	m.storeItems(src.Id, []syncItem{{
+	m.storeItems(context.Background(), src.Id, []syncItem{{
 		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008, Action: "watchlist",
 	}})
-	m.markSyncItemAdded(src.Id, "trakt_tv_1", "tv_1396")
+	m.markSyncItemAdded(context.Background(), src.Id, "trakt_tv_1", "tv_1396")
 
 	called := make(chan struct{}, 1)
 	m.listMissingFn = func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error) {
@@ -506,7 +506,7 @@ func TestSearchOnAddDisabledSkipsMissingQueue(t *testing.T) {
 		return &tvmgmtv1.ListMissingResponse{}, nil
 	}
 
-	m.addItemsToLibrary(src, []syncItem{{
+	m.addItemsToLibrary(context.Background(), src, []syncItem{{
 		ExternalID: "trakt_tv_1", TMDBID: 1396, MediaType: "tv", Title: "Breaking Bad", Year: 2008,
 	}})
 
@@ -528,7 +528,7 @@ func TestQueueMovieSearch(t *testing.T) {
 		close(done)
 		return nil
 	}
-	m.queueMovieSearch(src, "mv_550", syncItem{TMDBID: 550, Title: "Fight Club", Year: 1999})
+	m.queueMovieSearch(context.Background(), src, "mv_550", syncItem{TMDBID: 550, Title: "Fight Club", Year: 1999})
 
 	select {
 	case <-done:

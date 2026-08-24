@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +14,7 @@ import (
 
 const lastfmAPIBase = "https://ws.audioscrobbler.com/2.0/"
 
-func (m *Module) fetchLastfm(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchLastfm(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	apiKey := strings.TrimSpace(source.GetApiKey())
 	if apiKey == "" {
 		return nil, fmt.Errorf("lastfm api_key required for source %s", source.GetName())
@@ -21,9 +22,9 @@ func (m *Module) fetchLastfm(source *listsyncv1.ListSource) ([]syncItem, error) 
 	spec := parseLastfmListSpec(source)
 	switch spec.kind {
 	case "chart":
-		return m.fetchLastfmChart(apiKey, spec.limit)
+		return m.fetchLastfmChart(ctx, apiKey, spec.limit)
 	case "tag":
-		return m.fetchLastfmTag(apiKey, spec.tag, spec.limit)
+		return m.fetchLastfmTag(ctx, apiKey, spec.tag, spec.limit)
 	case "loved":
 		user := spec.user
 		if user == "" {
@@ -32,7 +33,7 @@ func (m *Module) fetchLastfm(source *listsyncv1.ListSource) ([]syncItem, error) 
 		if user == "" {
 			return nil, fmt.Errorf("lastfm loved list requires user:NAME or username")
 		}
-		return m.fetchLastfmLoved(apiKey, user, spec.limit)
+		return m.fetchLastfmLoved(ctx, apiKey, user, spec.limit)
 	case "library":
 		user := spec.user
 		if user == "" {
@@ -41,7 +42,7 @@ func (m *Module) fetchLastfm(source *listsyncv1.ListSource) ([]syncItem, error) 
 		if user == "" {
 			return nil, fmt.Errorf("lastfm library list requires user:NAME or username")
 		}
-		return m.fetchLastfmLibrary(apiKey, user, spec.limit)
+		return m.fetchLastfmLibrary(ctx, apiKey, user, spec.limit)
 	default:
 		user := spec.user
 		if user == "" {
@@ -57,7 +58,7 @@ func (m *Module) fetchLastfm(source *listsyncv1.ListSource) ([]syncItem, error) 
 			parts := strings.SplitN(user, ":", 2)
 			user = strings.TrimSpace(parts[1])
 		}
-		return m.fetchLastfmTopArtists(apiKey, user, spec.period, spec.limit)
+		return m.fetchLastfmTopArtists(ctx, apiKey, user, spec.period, spec.limit)
 	}
 }
 
@@ -104,7 +105,7 @@ func parseLastfmListSpec(source *listsyncv1.ListSource) lastfmListSpec {
 	return spec
 }
 
-func (m *Module) fetchLastfmTopArtists(apiKey, user, period string, limit int) ([]syncItem, error) {
+func (m *Module) fetchLastfmTopArtists(ctx context.Context, apiKey, user, period string, limit int) ([]syncItem, error) {
 	params := url.Values{}
 	params.Set("method", "user.gettopartists")
 	params.Set("user", user)
@@ -114,41 +115,41 @@ func (m *Module) fetchLastfmTopArtists(apiKey, user, period string, limit int) (
 	if period != "" {
 		params.Set("period", period)
 	}
-	body, err := m.lastfmGet(params)
+	body, err := m.lastfmGet(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return parseLastfmArtists(body, fmt.Sprintf("lastfm_top_%s", user))
 }
 
-func (m *Module) fetchLastfmLibrary(apiKey, user string, limit int) ([]syncItem, error) {
+func (m *Module) fetchLastfmLibrary(ctx context.Context, apiKey, user string, limit int) ([]syncItem, error) {
 	params := url.Values{}
 	params.Set("method", "user.getartists")
 	params.Set("user", user)
 	params.Set("api_key", apiKey)
 	params.Set("format", "json")
 	params.Set("limit", fmt.Sprintf("%d", clampLastfmLimit(limit)))
-	body, err := m.lastfmGet(params)
+	body, err := m.lastfmGet(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return parseLastfmArtists(body, fmt.Sprintf("lastfm_library_%s", user))
 }
 
-func (m *Module) fetchLastfmChart(apiKey string, limit int) ([]syncItem, error) {
+func (m *Module) fetchLastfmChart(ctx context.Context, apiKey string, limit int) ([]syncItem, error) {
 	params := url.Values{}
 	params.Set("method", "chart.gettopartists")
 	params.Set("api_key", apiKey)
 	params.Set("format", "json")
 	params.Set("limit", fmt.Sprintf("%d", clampLastfmLimit(limit)))
-	body, err := m.lastfmGet(params)
+	body, err := m.lastfmGet(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return parseLastfmArtists(body, "lastfm_chart")
 }
 
-func (m *Module) fetchLastfmTag(apiKey, tag string, limit int) ([]syncItem, error) {
+func (m *Module) fetchLastfmTag(ctx context.Context, apiKey, tag string, limit int) ([]syncItem, error) {
 	if tag == "" {
 		return nil, fmt.Errorf("lastfm tag:NAME required")
 	}
@@ -158,34 +159,34 @@ func (m *Module) fetchLastfmTag(apiKey, tag string, limit int) ([]syncItem, erro
 	params.Set("api_key", apiKey)
 	params.Set("format", "json")
 	params.Set("limit", fmt.Sprintf("%d", clampLastfmLimit(limit)))
-	body, err := m.lastfmGet(params)
+	body, err := m.lastfmGet(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return parseLastfmArtists(body, fmt.Sprintf("lastfm_tag_%s", tag))
 }
 
-func (m *Module) fetchLastfmLoved(apiKey, user string, limit int) ([]syncItem, error) {
+func (m *Module) fetchLastfmLoved(ctx context.Context, apiKey, user string, limit int) ([]syncItem, error) {
 	params := url.Values{}
 	params.Set("method", "user.getlovedtracks")
 	params.Set("user", user)
 	params.Set("api_key", apiKey)
 	params.Set("format", "json")
 	params.Set("limit", fmt.Sprintf("%d", clampLastfmLimit(limit)))
-	body, err := m.lastfmGet(params)
+	body, err := m.lastfmGet(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	return parseLastfmLovedTracks(body, user)
 }
 
-func (m *Module) lastfmGet(params url.Values) ([]byte, error) {
+func (m *Module) lastfmGet(ctx context.Context, params url.Values) ([]byte, error) {
 	u := lastfmAPIBase + "?" + params.Encode()
-	resp, err := m.httpCli.Get(u)
+	resp, err := m.httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, err
@@ -194,8 +195,8 @@ func (m *Module) lastfmGet(params url.Values) ([]byte, error) {
 		return nil, fmt.Errorf("last.fm HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
 	var probe struct {
-		Error   int    `json:"error"`
 		Message string `json:"message"`
+		Error   int    `json:"error"`
 	}
 	if err := json.Unmarshal(body, &probe); err == nil && probe.Error != 0 {
 		return nil, fmt.Errorf("last.fm API error %d: %s", probe.Error, probe.Message)

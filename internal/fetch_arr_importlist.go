@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,22 +13,22 @@ import (
 )
 
 type arrImportListField struct {
-	Name  string      `json:"name"`
 	Value interface{} `json:"value"`
+	Name  string      `json:"name"`
 }
 
 type arrImportListConfig struct {
-	ID                 int                  `json:"id"`
 	Name               string               `json:"name"`
 	Implementation     string               `json:"implementation"`
+	Fields             []arrImportListField `json:"fields"`
+	ID                 int                  `json:"id"`
 	Enabled            bool                 `json:"enabled"`
 	EnableAutomaticAdd bool                 `json:"enableAutomaticAdd"`
-	Fields             []arrImportListField `json:"fields"`
 }
 
-func (m *Module) fetchRadarrImportList(source *listsyncv1.ListSource) ([]syncItem, error) {
-	m.refreshArrImportListCache(source)
-	body, err := m.arrAPIGet(source, "/api/v3/importlist/movie")
+func (m *Module) fetchRadarrImportList(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
+	m.refreshArrImportListCache(ctx, source)
+	body, err := m.arrAPIGet(ctx, source, "/api/v3/importlist/movie")
 	if err != nil {
 		return nil, err
 	}
@@ -35,21 +36,21 @@ func (m *Module) fetchRadarrImportList(source *listsyncv1.ListSource) ([]syncIte
 	return parseArrImportListMovies(body, "radarr_importlist", listID)
 }
 
-func (m *Module) fetchSonarrImportList(source *listsyncv1.ListSource) ([]syncItem, error) {
-	m.refreshArrImportListCache(source)
+func (m *Module) fetchSonarrImportList(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
+	m.refreshArrImportListCache(ctx, source)
 	listID, _ := arrImportListIDFilter(source.GetListUrl())
-	body, err := m.arrAPIGet(source, "/api/v3/importlist/series")
+	body, err := m.arrAPIGet(ctx, source, "/api/v3/importlist/series")
 	if err == nil {
 		return parseArrImportListSeries(body, "sonarr_importlist", listID)
 	}
 	if !arrEndpointMissing(err) {
 		return nil, err
 	}
-	return m.fetchSonarrImportListViaConfigs(source)
+	return m.fetchSonarrImportListViaConfigs(ctx, source)
 }
 
-func (m *Module) fetchSonarrImportListViaConfigs(source *listsyncv1.ListSource) ([]syncItem, error) {
-	body, err := m.arrAPIGet(source, "/api/v3/importlist")
+func (m *Module) fetchSonarrImportListViaConfigs(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
+	body, err := m.arrAPIGet(ctx, source, "/api/v3/importlist")
 	if err != nil {
 		return nil, fmt.Errorf("sonarr importlist configs: %w", err)
 	}
@@ -67,7 +68,7 @@ func (m *Module) fetchSonarrImportListViaConfigs(source *listsyncv1.ListSource) 
 		if hasListID && cfg.ID != wantListID {
 			continue
 		}
-		items, fetchErr := m.fetchItemsFromArrImportListConfig(source, cfg)
+		items, fetchErr := m.fetchItemsFromArrImportListConfig(ctx, source, cfg)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("import list %q (%s): %w", cfg.Name, cfg.Implementation, fetchErr)
 		}
@@ -82,34 +83,34 @@ func (m *Module) fetchSonarrImportListViaConfigs(source *listsyncv1.ListSource) 
 	return out, nil
 }
 
-func (m *Module) fetchItemsFromArrImportListConfig(parent *listsyncv1.ListSource, cfg arrImportListConfig) ([]syncItem, error) {
+func (m *Module) fetchItemsFromArrImportListConfig(ctx context.Context, parent *listsyncv1.ListSource, cfg arrImportListConfig) ([]syncItem, error) {
 	proxy := arrImportListProxySource(parent, cfg)
 	impl := strings.ToLower(cfg.Implementation)
 	switch {
 	case strings.Contains(impl, "traktlist"), strings.Contains(impl, "traktlistimport"):
-		return m.fetchTraktList(proxy)
+		return m.fetchTraktList(ctx, proxy)
 	case strings.Contains(impl, "traktuser"), strings.Contains(impl, "traktwatchlist"):
-		return m.fetchTrakt(proxy)
+		return m.fetchTrakt(ctx, proxy)
 	case strings.Contains(impl, "trakt"):
-		return m.fetchTraktList(proxy)
+		return m.fetchTraktList(ctx, proxy)
 	case strings.Contains(impl, "stevenlu"):
-		return m.fetchStevenLu(proxy)
+		return m.fetchStevenLu(ctx, proxy)
 	case strings.Contains(impl, "tmdb"):
-		return m.fetchTMDBList(proxy)
+		return m.fetchTMDBList(ctx, proxy)
 	case strings.Contains(impl, "rss"):
-		return m.fetchRSS(proxy)
+		return m.fetchRSS(ctx, proxy)
 	case strings.Contains(impl, "imdb"):
-		return m.fetchIMDb(proxy)
+		return m.fetchIMDb(ctx, proxy)
 	case strings.Contains(impl, "plex"):
-		return m.fetchPlex(proxy)
+		return m.fetchPlex(ctx, proxy)
 	case strings.Contains(impl, "jellyfin"):
-		return m.fetchJellyfin(proxy)
+		return m.fetchJellyfin(ctx, proxy)
 	case strings.Contains(impl, "radarr"):
-		return m.fetchRadarr(proxy)
+		return m.fetchRadarr(ctx, proxy)
 	case strings.Contains(impl, "sonarr"):
-		return m.fetchSonarr(proxy)
+		return m.fetchSonarr(ctx, proxy)
 	case strings.Contains(impl, "watcharr"):
-		return m.fetchWatcharr(proxy)
+		return m.fetchWatcharr(ctx, proxy)
 	default:
 		return nil, fmt.Errorf("unsupported import list implementation %q", cfg.Implementation)
 	}
@@ -152,7 +153,7 @@ func arrFieldValue(fields []arrImportListField, names ...string) string {
 	for _, want := range names {
 		want = strings.ToLower(want)
 		for _, f := range fields {
-			if strings.ToLower(f.Name) != want {
+			if !strings.EqualFold(f.Name, want) {
 				continue
 			}
 			switch v := f.Value.(type) {
@@ -175,7 +176,7 @@ func arrFieldValue(fields []arrImportListField, names ...string) string {
 	return ""
 }
 
-func (m *Module) arrAPIGet(source *listsyncv1.ListSource, path string) ([]byte, error) {
+func (m *Module) arrAPIGet(ctx context.Context, source *listsyncv1.ListSource, path string) ([]byte, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(source.GetBaseUrl()), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("base_url required for source %s", source.GetName())
@@ -184,7 +185,7 @@ func (m *Module) arrAPIGet(source *listsyncv1.ListSource, path string) ([]byte, 
 	if apiKey == "" {
 		return nil, fmt.Errorf("api_key required for source %s", source.GetName())
 	}
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +195,7 @@ func (m *Module) arrAPIGet(source *listsyncv1.ListSource, path string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -203,7 +204,7 @@ func (m *Module) arrAPIGet(source *listsyncv1.ListSource, path string) ([]byte, 
 		return nil, fmt.Errorf("arr endpoint missing (%d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("arr API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("arr API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return body, nil
 }
@@ -227,8 +228,8 @@ func parseArrImportListConfigs(body []byte) ([]arrImportListConfig, error) {
 func parseArrImportListMovies(body []byte, prefix string, listIDFilter int) ([]syncItem, error) {
 	var rows []struct {
 		Title  string `json:"title"`
-		TmdbID int    `json:"tmdbId"`
 		ImdbID string `json:"imdbId"`
+		TmdbID int    `json:"tmdbId"`
 		Year   int    `json:"year"`
 		ListID int    `json:"listId"`
 	}
@@ -266,9 +267,9 @@ func parseArrImportListMovies(body []byte, prefix string, listIDFilter int) ([]s
 func parseArrImportListSeries(body []byte, prefix string, listIDFilter int) ([]syncItem, error) {
 	var rows []struct {
 		Title  string `json:"title"`
+		ImdbID string `json:"imdbId"`
 		TmdbID int    `json:"tmdbId"`
 		TvdbID int    `json:"tvdbId"`
-		ImdbID string `json:"imdbId"`
 		Year   int    `json:"year"`
 		ListID int    `json:"listId"`
 	}
@@ -310,9 +311,7 @@ func arrImportListIDFilter(listURL string) (int, bool) {
 	if listURL == "" {
 		return 0, false
 	}
-	if strings.HasPrefix(listURL, "list:") {
-		listURL = strings.TrimPrefix(listURL, "list:")
-	}
+	listURL = strings.TrimPrefix(listURL, "list:")
 	id, err := strconv.Atoi(listURL)
 	if err != nil || id <= 0 {
 		return 0, false

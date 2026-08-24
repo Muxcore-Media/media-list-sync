@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,14 +14,14 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) triggerArrImportListSync(source *listsyncv1.ListSource) error {
+func (m *Module) triggerArrImportListSync(ctx context.Context, source *listsyncv1.ListSource) error {
 	baseURL := strings.TrimRight(strings.TrimSpace(source.GetBaseUrl()), "/")
 	apiKey := strings.TrimSpace(source.GetApiKey())
 	if baseURL == "" || apiKey == "" {
 		return fmt.Errorf("base_url and api_key required")
 	}
 	payload, _ := json.Marshal(map[string]string{"name": "ImportListSync"})
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v3/command", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v3/command", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -31,10 +32,10 @@ func (m *Module) triggerArrImportListSync(source *listsyncv1.ListSource) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("arr ImportListSync command %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return fmt.Errorf("arr ImportListSync command %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	var cmd struct {
 		ID int `json:"id"`
@@ -42,13 +43,13 @@ func (m *Module) triggerArrImportListSync(source *listsyncv1.ListSource) error {
 	if err := json.Unmarshal(body, &cmd); err != nil || cmd.ID <= 0 {
 		return nil
 	}
-	return m.waitArrCommand(baseURL, apiKey, cmd.ID)
+	return m.waitArrCommand(ctx, baseURL, apiKey, cmd.ID)
 }
 
-func (m *Module) waitArrCommand(baseURL, apiKey string, commandID int) error {
+func (m *Module) waitArrCommand(ctx context.Context, baseURL, apiKey string, commandID int) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v3/command/%d", baseURL, commandID), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v3/command/%d", baseURL, commandID), http.NoBody)
 		if err != nil {
 			return err
 		}
@@ -59,7 +60,7 @@ func (m *Module) waitArrCommand(baseURL, apiKey string, commandID int) error {
 			return err
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("arr command status %d", resp.StatusCode)
 		}
@@ -82,8 +83,8 @@ func (m *Module) waitArrCommand(baseURL, apiKey string, commandID int) error {
 	return fmt.Errorf("arr ImportListSync timed out")
 }
 
-func (m *Module) refreshArrImportListCache(source *listsyncv1.ListSource) {
-	if err := m.triggerArrImportListSync(source); err != nil {
+func (m *Module) refreshArrImportListCache(ctx context.Context, source *listsyncv1.ListSource) {
+	if err := m.triggerArrImportListSync(ctx, source); err != nil {
 		slog.Debug("arr ImportListSync before fetch failed", "source", source.GetName(), "error", err)
 	}
 }

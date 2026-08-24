@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,12 +10,12 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchStevenLu(_ *listsyncv1.ListSource) ([]syncItem, error) {
-	resp, err := m.httpCli.Get("https://api.stevenlu.com/tmdb/movies")
+func (m *Module) fetchStevenLu(ctx context.Context, _ *listsyncv1.ListSource) ([]syncItem, error) {
+	resp, err := m.httpGet(ctx, "https://api.stevenlu.com/tmdb/movies")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -24,8 +25,8 @@ func (m *Module) fetchStevenLu(_ *listsyncv1.ListSource) ([]syncItem, error) {
 	}
 	var rows []struct {
 		IMDBID string  `json:"imdbId"`
-		TMDBID float64 `json:"tmdbId"`
 		Title  string  `json:"title"`
+		TMDBID float64 `json:"tmdbId"`
 		Year   float64 `json:"year"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {

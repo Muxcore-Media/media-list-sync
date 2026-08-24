@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchTMDBList(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchTMDBList(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	listID := strings.TrimSpace(source.GetListUrl())
 	if listID == "" {
 		listID = strings.TrimSpace(source.GetBaseUrl())
@@ -28,17 +29,17 @@ func (m *Module) fetchTMDBList(source *listsyncv1.ListSource) ([]syncItem, error
 	}
 
 	url, defaultMediaType := tmdbListURL(listID, apiKey)
-	resp, err := m.httpCli.Get(url)
+	resp, err := m.httpGet(ctx, url)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tmdb list API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("tmdb list API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 
 	if defaultMediaType != "" {
@@ -75,11 +76,11 @@ func parseTMDBUserList(body []byte) ([]syncItem, error) {
 	var payload struct {
 		Items []struct {
 			MediaType string `json:"media_type"`
-			ID        int    `json:"id"`
 			Title     string `json:"title"`
 			Name      string `json:"name"`
 			Release   string `json:"release_date"`
 			FirstAir  string `json:"first_air_date"`
+			ID        int    `json:"id"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -95,11 +96,11 @@ func parseTMDBUserList(body []byte) ([]syncItem, error) {
 func parseTMDBDiscover(body []byte, defaultMediaType string) ([]syncItem, error) {
 	var payload struct {
 		Results []struct {
-			ID       int    `json:"id"`
 			Title    string `json:"title"`
 			Name     string `json:"name"`
 			Release  string `json:"release_date"`
 			FirstAir string `json:"first_air_date"`
+			ID       int    `json:"id"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {

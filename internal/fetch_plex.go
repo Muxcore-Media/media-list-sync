@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchPlex(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchPlex(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	token := source.GetApiKey()
 	if token == "" {
 		return nil, fmt.Errorf("plex api_key (X-Plex-Token) not configured for source %s", source.GetName())
@@ -25,7 +26,7 @@ func (m *Module) fetchPlex(source *listsyncv1.ListSource) ([]syncItem, error) {
 	start := 0
 	const pageSize = 50
 	for {
-		page, err := m.fetchPlexPage(token, clientID, start, pageSize)
+		page, err := m.fetchPlexPage(ctx, token, clientID, start, pageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -38,9 +39,9 @@ func (m *Module) fetchPlex(source *listsyncv1.ListSource) ([]syncItem, error) {
 	return items, nil
 }
 
-func (m *Module) fetchPlexPage(token, clientID string, start, size int) ([]syncItem, error) {
+func (m *Module) fetchPlexPage(ctx context.Context, token, clientID string, start, size int) ([]syncItem, error) {
 	u := fmt.Sprintf("https://discover.provider.plex.tv/library/sections/watchlist/all?X-Plex-Container-Start=%d&X-Plex-Container-Size=%d", start, size)
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -52,13 +53,13 @@ func (m *Module) fetchPlexPage(token, clientID string, start, size int) ([]syncI
 	if err != nil {
 		return nil, fmt.Errorf("plex watchlist: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("plex API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("plex API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
 	return parsePlexWatchlist(body)
 }
@@ -70,11 +71,11 @@ func parsePlexWatchlist(body []byte) ([]syncItem, error) {
 				RatingKey string `json:"ratingKey"`
 				Title     string `json:"title"`
 				Type      string `json:"type"`
-				Year      int    `json:"year"`
 				Guid      string `json:"guid"`
 				GuidList  []struct {
 					ID string `json:"id"`
 				} `json:"Guid"`
+				Year int `json:"year"`
 			} `json:"Metadata"`
 		} `json:"MediaContainer"`
 	}

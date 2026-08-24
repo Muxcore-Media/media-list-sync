@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-func (m *Module) fetchTraktList(source *listsyncv1.ListSource) ([]syncItem, error) {
+func (m *Module) fetchTraktList(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	clientID := strings.TrimSpace(source.GetClientId())
 	if clientID == "" {
 		clientID = os.Getenv("TRAKT_CLIENT_ID")
@@ -24,7 +25,7 @@ func (m *Module) fetchTraktList(source *listsyncv1.ListSource) ([]syncItem, erro
 	if slug == "" {
 		return nil, fmt.Errorf("trakt list url required for source %s", source.GetName())
 	}
-	req, err := http.NewRequest("GET", "https://api.trakt.tv/lists/"+slug+"/items?type=movie,show", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.trakt.tv/lists/"+slug+"/items?type=movie,show", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -38,19 +39,20 @@ func (m *Module) fetchTraktList(source *listsyncv1.ListSource) ([]syncItem, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("trakt list API %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, fmt.Errorf("trakt list API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
 	}
+	//nolint:govet // JSON field order follows Trakt API schema
 	var items []struct {
 		Type  string `json:"type"`
 		Movie *struct {
-			Title string `json:"title"`
 			Year  int    `json:"year"`
+			Title string `json:"title"`
 			IDs   struct {
 				Trakt int    `json:"trakt"`
 				TMDB  int    `json:"tmdb"`
@@ -58,8 +60,8 @@ func (m *Module) fetchTraktList(source *listsyncv1.ListSource) ([]syncItem, erro
 			} `json:"ids"`
 		} `json:"movie"`
 		Show *struct {
-			Title string `json:"title"`
 			Year  int    `json:"year"`
+			Title string `json:"title"`
 			IDs   struct {
 				Trakt int    `json:"trakt"`
 				TMDB  int    `json:"tmdb"`

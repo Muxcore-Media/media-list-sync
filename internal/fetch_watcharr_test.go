@@ -28,7 +28,9 @@ func TestWatcharrMediaToSyncItem(t *testing.T) {
 			IMDB string `json:"imdb"`
 		}{TMDB: 550, IMDB: "tt0137523"},
 		ReleaseDate: "1999-10-15",
-		Watched:     struct{ ID uint `json:"id"` }{ID: 42},
+		Watched: struct {
+			ID uint `json:"id"`
+		}{ID: 42},
 	})
 	if !ok {
 		t.Fatal("expected ok")

@@ -536,4 +536,3 @@ func TestQueueMovieSearch(t *testing.T) {
 		t.Fatal("timed out waiting for movie search queue")
 	}
 }
-

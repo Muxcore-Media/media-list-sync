@@ -7,6 +7,7 @@ import (
 
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -90,5 +91,42 @@ func TestFixtureSyncIntoMoviesAndTV(t *testing.T) {
 	}
 	if m.syncItemStatus(context.Background(), src.Id, "tt0903747") != "added" {
 		t.Fatal("tv not marked added")
+	}
+}
+
+type fixtureMusic struct {
+	musicv1.UnimplementedMusicManagementServiceServer
+	adds []string
+}
+
+func (f *fixtureMusic) AddArtist(_ context.Context, req *musicv1.AddArtistRequest) (*musicv1.AddArtistResponse, error) {
+	f.adds = append(f.adds, req.GetName())
+	return &musicv1.AddArtistResponse{Artist: &musicv1.Artist{Id: "music_fixture", Name: req.GetName()}}, nil
+}
+
+func TestFixtureSyncLastfmIntoMusic(t *testing.T) {
+	music := &fixtureMusic{}
+	mConn := dialBuf(t, func(s *grpc.Server) { musicv1.RegisterMusicManagementServiceServer(s, music) })
+
+	m := newTestModule(t)
+	m.musicClient = musicv1.NewMusicManagementServiceClient(mConn)
+
+	src := &listsyncv1.ListSource{
+		Id: "src_lastfm", Name: "Last.fm", Type: "lastfm",
+		MonitorMode: monitorModeNone, QualityProfileId: "qp1", RootFolderPath: "/music",
+	}
+	items := []syncItem{{
+		ExternalID: "lastfm_mbid_abc", MusicBrainzID: "abc", MediaType: "music", Title: "Radiohead", Action: "lastfm",
+	}}
+	if n := m.storeItems(context.Background(), src.Id, items); n != 1 {
+		t.Fatalf("store=%d", n)
+	}
+	m.addItemsToLibrary(context.Background(), src, items)
+
+	if len(music.adds) != 1 || music.adds[0] != "Radiohead" {
+		t.Fatalf("music adds: %v", music.adds)
+	}
+	if m.syncItemStatus(context.Background(), src.Id, "lastfm_mbid_abc") != "added" {
+		t.Fatal("music item not marked added")
 	}
 }

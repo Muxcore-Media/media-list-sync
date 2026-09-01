@@ -7,12 +7,20 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 )
 
-const lastfmAPIBase = "https://ws.audioscrobbler.com/2.0/"
+const defaultLastfmAPIBase = "https://ws.audioscrobbler.com/2.0/"
+
+func (m *Module) lastfmAPIBaseURL() string {
+	if b := strings.TrimSpace(m.lastfmAPIBase); b != "" {
+		return strings.TrimRight(b, "/") + "/"
+	}
+	return defaultLastfmAPIBase
+}
 
 func (m *Module) fetchLastfm(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
 	apiKey := strings.TrimSpace(source.GetApiKey())
@@ -76,25 +84,33 @@ func parseLastfmListSpec(source *listsyncv1.ListSource) lastfmListSpec {
 	if raw == "" {
 		return spec
 	}
-	lower := strings.ToLower(raw)
-	switch {
-	case lower == "chart" || strings.HasPrefix(lower, "chart:"):
-		spec.kind = "chart"
-	case strings.HasPrefix(lower, "tag:"):
-		spec.kind = "tag"
-		spec.tag = strings.TrimSpace(raw[4:])
-	case strings.HasPrefix(lower, "loved:"):
-		spec.kind = "loved"
-		spec.user = strings.TrimSpace(raw[6:])
-	case strings.HasPrefix(lower, "library:"):
-		spec.kind = "library"
-		spec.user = strings.TrimSpace(raw[8:])
-	case strings.HasPrefix(lower, "user:"):
-		spec.user = strings.TrimSpace(raw[5:])
-	case strings.HasPrefix(lower, "period:"):
-		spec.period = strings.TrimSpace(raw[7:])
-	default:
-		spec.user = raw
+	for _, tok := range strings.Fields(raw) {
+		lower := strings.ToLower(tok)
+		switch {
+		case lower == "chart" || strings.HasPrefix(lower, "chart:"):
+			spec.kind = "chart"
+		case strings.HasPrefix(lower, "tag:"):
+			spec.kind = "tag"
+			spec.tag = strings.TrimSpace(tok[4:])
+		case strings.HasPrefix(lower, "loved:"):
+			spec.kind = "loved"
+			spec.user = strings.TrimSpace(tok[6:])
+		case strings.HasPrefix(lower, "library:"):
+			spec.kind = "library"
+			spec.user = strings.TrimSpace(tok[8:])
+		case strings.HasPrefix(lower, "user:"):
+			spec.user = strings.TrimSpace(tok[5:])
+		case strings.HasPrefix(lower, "period:"):
+			spec.period = strings.TrimSpace(tok[7:])
+		case strings.HasPrefix(lower, "limit:"):
+			if n, err := strconv.Atoi(strings.TrimSpace(tok[6:])); err == nil {
+				spec.limit = n
+			}
+		default:
+			if spec.user == "" && spec.tag == "" && spec.kind == "top" {
+				spec.user = tok
+			}
+		}
 	}
 	if spec.limit <= 0 {
 		spec.limit = 100
@@ -181,7 +197,7 @@ func (m *Module) fetchLastfmLoved(ctx context.Context, apiKey, user string, limi
 }
 
 func (m *Module) lastfmGet(ctx context.Context, params url.Values) ([]byte, error) {
-	u := lastfmAPIBase + "?" + params.Encode()
+	u := m.lastfmAPIBaseURL() + "?" + params.Encode()
 	resp, err := m.httpGet(ctx, u)
 	if err != nil {
 		return nil, err

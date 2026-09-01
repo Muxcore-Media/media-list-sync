@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -67,6 +66,8 @@ type Module struct {
 	musicBrainzConn      *grpc.ClientConn
 	listMissingFn        func(ctx context.Context, seriesID string, page, pageSize int32) (*tvmgmtv1.ListMissingResponse, error)
 	httpCli              *http.Client
+	lastfmAPIBase        string
+	traktAPIBase         string
 	id                   string
 	dbPath               string
 	grpcAddr             string
@@ -235,10 +236,24 @@ func (m *Module) Init(ctx context.Context) error {
 	}
 	_, _ = db.ExecContext(ctx, `ALTER TABLE sync_log ADD COLUMN items_removed INTEGER DEFAULT 0`)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE sync_items ADD COLUMN musicbrainz_id TEXT DEFAULT ''`)
+	if _, settingsErr := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS module_settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)
+	`); settingsErr != nil {
+		_ = db.Close()
+		return fmt.Errorf("create module_settings: %w", settingsErr)
+	}
 
 	m.mu.Lock()
 	m.db = db
 	m.mu.Unlock()
+
+	if err := m.loadPersistedSettings(ctx); err != nil {
+		_ = db.Close()
+		return err
+	}
 
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", m.grpcAddr)
 	if err != nil {
@@ -576,7 +591,10 @@ func (m *Module) syncSource(ctx context.Context, source *listsyncv1.ListSource) 
 	m.mu.Lock()
 	_, _ = m.db.ExecContext(ctx, `UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, items_removed = ?, error = ?, completed_at = ? WHERE id = ?`,
 		status, found, newCount, removedCount, errStr, completed, logID)
-	_, _ = m.db.ExecContext(ctx, `UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
+	if err == nil {
+		_, _ = m.db.ExecContext(ctx, `UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
+	}
+	m.pruneSyncLog(ctx)
 	m.mu.Unlock()
 
 	if err == nil {
@@ -1051,10 +1069,19 @@ func (m *Module) queueMissingMonitoredEpisodes(ctx context.Context, seriesID str
 func (m *Module) ListSources(ctx context.Context, req *listsyncv1.ListSourcesRequest) (*listsyncv1.ListSourcesResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return &listsyncv1.ListSourcesResponse{Sources: m.loadSources(ctx)}, nil
+	sources := m.loadSources(ctx)
+	for _, s := range sources {
+		s.ApiKey = redactedAPIKey(s.GetApiKey())
+	}
+	return &listsyncv1.ListSourcesResponse{Sources: sources}, nil
 }
 
 func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest) (*listsyncv1.AddSourceResponse, error) {
+	sourceType := strings.TrimSpace(req.GetType())
+	if err := validateSourceType(sourceType); err != nil {
+		return nil, err
+	}
+
 	rootPath, err := m.resolveRootFolderPath(ctx, req.GetRootFolderPath(), "")
 	if err != nil {
 		return nil, err
@@ -1078,7 +1105,7 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 	}
 
 	_, err = m.db.ExecContext(ctx, `INSERT INTO list_sources (id, name, type, enabled, username, client_id, list_url, sync_interval_minutes, base_url, api_key, quality_profile_id, root_folder_path, clean_library_level, tag_ids, monitor_mode, minimum_availability, search_on_add, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, req.GetName(), req.GetType(), req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
+		id, req.GetName(), sourceType, req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
 		req.GetBaseUrl(), req.GetApiKey(), req.GetQualityProfileId(), rootPath,
 		normalizeCleanLibraryLevel(req.GetCleanLibraryLevel()), req.GetTagIds(),
 		normalizeMonitorMode(req.GetMonitorMode()), normalizeMinimumAvailability(req.GetMinimumAvailability()),
@@ -1116,6 +1143,19 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 	apiKey := existing.GetApiKey()
 	if v := strings.TrimSpace(req.GetApiKey()); v != "" {
 		apiKey = v
+	}
+
+	username := existing.GetUsername()
+	if v := strings.TrimSpace(req.GetUsername()); v != "" {
+		username = v
+	}
+	clientID := existing.GetClientId()
+	if v := strings.TrimSpace(req.GetClientId()); v != "" {
+		clientID = v
+	}
+	listURL := existing.GetListUrl()
+	if v := strings.TrimSpace(req.GetListUrl()); v != "" {
+		listURL = v
 	}
 
 	rootPath := existing.GetRootFolderPath()
@@ -1169,7 +1209,7 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := m.db.ExecContext(ctx, `UPDATE list_sources SET name = ?, enabled = ?, username = ?, client_id = ?, list_url = ?, sync_interval_minutes = ?, base_url = ?, api_key = ?, quality_profile_id = ?, root_folder_path = ?, clean_library_level = ?, tag_ids = ?, monitor_mode = ?, minimum_availability = ?, search_on_add = ?, updated_at = ? WHERE id = ?`,
-		name, enabledInt, req.GetUsername(), req.GetClientId(), req.GetListUrl(), interval,
+		name, enabledInt, username, clientID, listURL, interval,
 		baseURL, apiKey, req.GetQualityProfileId(), rootPath, cleanLevel, tagIDs, monitorMode, minAvail, searchOnAddInt, now, req.GetId())
 	if err != nil {
 		return nil, fmt.Errorf("update source: %w", err)
@@ -1283,7 +1323,7 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 	}
 	offset := (page - 1) * pageSize
 
-	query := `SELECT id, source_id, external_id, tmdb_id, imdb_id, media_type, title, year, season_number, episode_number, action, status, matched_item_id, created_at, updated_at FROM sync_items`
+	query := `SELECT id, source_id, external_id, tmdb_id, imdb_id, COALESCE(musicbrainz_id,''), media_type, title, year, season_number, episode_number, action, status, matched_item_id, created_at, updated_at FROM sync_items`
 	countQuery := `SELECT COUNT(*) FROM sync_items`
 	var args []any
 	var where []string
@@ -1297,7 +1337,7 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 		args = append(args, req.GetMediaType())
 	}
 	if req.GetMatchedOnly() {
-		where = append(where, `status = 'matched'`)
+		where = append(where, `status = 'added' AND matched_item_id != ''`)
 	}
 	if len(where) > 0 {
 		clause := ` WHERE ` + strings.Join(where, ` AND `)
@@ -1329,34 +1369,6 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 	return &listsyncv1.GetItemsResponse{Items: items, Total: clampInt32FromInt(total), Page: clampInt32FromInt(page), PageSize: clampInt32FromInt(pageSize)}, nil
 }
 
-// ── Trakt Integration ──────────────────────────────────────────
-
-type traktIDs struct {
-	IMDb  string `json:"imdb"`
-	Trakt int    `json:"trakt"`
-	TMDB  int    `json:"tmdb"`
-}
-
-type traktMovie struct {
-	Title string   `json:"title"`
-	IDs   traktIDs `json:"ids"`
-	Year  int      `json:"year"`
-}
-
-type traktShow struct {
-	Title string   `json:"title"`
-	IDs   traktIDs `json:"ids"`
-	Year  int      `json:"year"`
-}
-
-type traktWatchlistMovie struct {
-	Movie traktMovie `json:"movie"`
-}
-
-type traktWatchlistShow struct {
-	Show traktShow `json:"show"`
-}
-
 type syncItem struct {
 	ExternalID    string
 	IMDBID        string
@@ -1368,94 +1380,6 @@ type syncItem struct {
 	Year          int
 	SeasonNumber  int
 	EpisodeNumber int
-}
-
-func (m *Module) fetchTrakt(ctx context.Context, source *listsyncv1.ListSource) ([]syncItem, error) {
-	clientID := source.GetClientId()
-	if clientID == "" {
-		return nil, fmt.Errorf("trakt client_id not configured for source %s", source.GetName())
-	}
-	accessToken := source.GetApiKey()
-	if accessToken == "" {
-		return nil, fmt.Errorf("trakt api_key (OAuth access token) not configured for source %s", source.GetName())
-	}
-
-	var items []syncItem
-
-	movies, err := traktGet[traktWatchlistMovie](ctx, m.httpCli, clientID, accessToken, "/sync/watchlist/movies")
-	if err != nil {
-		return nil, fmt.Errorf("trakt watchlist movies: %w", err)
-	}
-	for _, entry := range movies {
-		mv := entry.Movie
-		if mv.IDs.Trakt == 0 && mv.Title == "" {
-			continue
-		}
-		items = append(items, syncItem{
-			ExternalID: fmt.Sprintf("trakt_%d", mv.IDs.Trakt),
-			IMDBID:     mv.IDs.IMDb,
-			TMDBID:     mv.IDs.TMDB,
-			MediaType:  "movie",
-			Title:      mv.Title,
-			Year:       mv.Year,
-			Action:     "watchlist",
-		})
-	}
-
-	shows, err := traktGet[traktWatchlistShow](ctx, m.httpCli, clientID, accessToken, "/sync/watchlist/shows")
-	if err != nil {
-		return nil, fmt.Errorf("trakt watchlist shows: %w", err)
-	}
-	for _, entry := range shows {
-		show := entry.Show
-		if show.IDs.Trakt == 0 && show.Title == "" {
-			continue
-		}
-		items = append(items, syncItem{
-			ExternalID: fmt.Sprintf("trakt_%d", show.IDs.Trakt),
-			IMDBID:     show.IDs.IMDb,
-			TMDBID:     show.IDs.TMDB,
-			MediaType:  "tv",
-			Title:      show.Title,
-			Year:       show.Year,
-			Action:     "watchlist",
-		})
-	}
-
-	return items, nil
-}
-
-func traktGet[T any](ctx context.Context, cli *http.Client, clientID, accessToken, path string) ([]T, error) {
-	base := "https://api.trakt.tv"
-	req, err := http.NewRequestWithContext(ctx, "GET", base+path, http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("trakt-api-version", "2")
-	req.Header.Set("trakt-api-key", clientID)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := cli.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("trakt API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
-	}
-
-	var result []T
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
-	}
-	return result, nil
 }
 
 // ── IMDb Integration ───────────────────────────────────────────
@@ -1644,18 +1568,26 @@ func (m *Module) loadSource(ctx context.Context, id string) *listsyncv1.ListSour
 }
 
 func scanSyncItem(rows *sql.Rows) *listsyncv1.SyncItem {
-	var id, srcID, extID, imdbID, mediaType, title, action, status, matchedID, createdAt, updatedAt string
+	var id, srcID, extID, imdbID, musicbrainzID, mediaType, title, action, status, matchedID, createdAt, updatedAt string
 	var tmdbID, year, seasonNum, epNum int64
-	if err := rows.Scan(&id, &srcID, &extID, &tmdbID, &imdbID, &mediaType, &title, &year, &seasonNum, &epNum, &action, &status, &matchedID, &createdAt, &updatedAt); err != nil {
+	if err := rows.Scan(&id, &srcID, &extID, &tmdbID, &imdbID, &musicbrainzID, &mediaType, &title, &year, &seasonNum, &epNum, &action, &status, &matchedID, &createdAt, &updatedAt); err != nil {
 		return nil
 	}
 	return &listsyncv1.SyncItem{
 		Id: id, SourceId: srcID, ExternalId: extID, TmdbId: clampInt32(tmdbID), ImdbId: imdbID,
+		MusicbrainzId: musicbrainzID,
 		MediaType: mediaType, Title: title, Year: clampInt32(year),
 		SeasonNumber: clampInt32(seasonNum), EpisodeNumber: clampInt32(epNum),
 		Action: action, Status: status, MatchedItemId: matchedID,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
+}
+
+func redactedAPIKey(key string) string {
+	if strings.TrimSpace(key) == "" {
+		return ""
+	}
+	return "********"
 }
 
 var _ contracts.Module = (*Module)(nil)

@@ -43,8 +43,6 @@ replace github.com/Muxcore-Media/media-music => ../media-music
 
 replace github.com/Muxcore-Media/metadata-musicbrainz => ../metadata-musicbrainz
 
-replace github.com/Muxcore-Media/contracts-scanner => ../contracts-scanner
-
 replace github.com/Muxcore-Media/contracts-automation => ../contracts-automation
 
 replace github.com/Muxcore-Media/contracts-media => ../contracts-media

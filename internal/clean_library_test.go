@@ -66,6 +66,28 @@ func TestReconcileRemovedItemsCallsCleanHook(t *testing.T) {
 	}
 }
 
+func TestReconcileRemovedItemsMusicCleanHook(t *testing.T) {
+	m := newTestModule(t)
+	called := false
+	m.cleanLibraryItemFn = func(_ *listsyncv1.ListSource, item trackedSyncItem, level string) error {
+		called = true
+		if item.MediaType != "music" || level != cleanLibraryRemove {
+			t.Fatalf("item=%+v level=%q", item, level)
+		}
+		return nil
+	}
+	src := &listsyncv1.ListSource{Id: "src_music", Name: "Last.fm", CleanLibraryLevel: cleanLibraryRemove}
+	items := []syncItem{{ExternalID: "lastfm_1", MediaType: "music", Title: "Radiohead", MusicBrainzID: "mbid"}}
+	m.storeItems(context.Background(), src.Id, items)
+	m.markSyncItemAdded(context.Background(), src.Id, "lastfm_1", "artist_1")
+	if n := m.reconcileRemovedItems(context.Background(), src, nil); n != 1 {
+		t.Fatalf("removed=%d", n)
+	}
+	if !called {
+		t.Fatal("expected music clean hook")
+	}
+}
+
 func TestStoreItemsResetsRemovedToPending(t *testing.T) {
 	m := newTestModule(t)
 	srcID := "src_reset"

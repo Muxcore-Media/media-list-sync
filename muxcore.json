@@ -1,7 +1,7 @@
 {
   "name": "Media List Sync",
-  "description": "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
-  "version": "0.2.3",
+  "description": "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Last.fm, Radarr, and Sonarr",
+  "version": "0.2.4",
   "author": "MuxCore",
   "roles": [
     "listsync",
@@ -22,6 +22,7 @@
     "importlist.tmdb_list",
     "importlist.rss",
     "importlist.watcharr",
+    "importlist.lastfm",
     "settings"
   ],
   "contracts": [],

@@ -9,6 +9,7 @@ import (
 
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 )
 
@@ -151,6 +152,8 @@ func (m *Module) unmonitorLibraryItem(ctx context.Context, item trackedSyncItem)
 		m.mu.RUnlock()
 		_, err := tc.UpdateTVShow(ctx, &tvmgmtv1.UpdateTVShowRequest{SeriesId: item.MatchedItemID, Monitored: &mon})
 		return err
+	case "music":
+		return m.setArtistMonitored(ctx, item.MatchedItemID, false)
 	default:
 		return fmt.Errorf("unsupported media type %q", item.MediaType)
 	}
@@ -175,6 +178,15 @@ func (m *Module) removeLibraryItem(ctx context.Context, item trackedSyncItem, de
 		tc := m.tvClient
 		m.mu.RUnlock()
 		_, err := tc.RemoveTVShow(ctx, &tvmgmtv1.RemoveTVShowRequest{SeriesId: item.MatchedItemID, DeleteFiles: deleteFiles})
+		return err
+	case "music":
+		if err := m.ensureMusic(ctx); err != nil {
+			return err
+		}
+		m.mu.RLock()
+		mc := m.musicClient
+		m.mu.RUnlock()
+		_, err := mc.RemoveArtist(ctx, &musicv1.RemoveArtistRequest{Id: item.MatchedItemID, DeleteFiles: deleteFiles})
 		return err
 	default:
 		return fmt.Errorf("unsupported media type %q", item.MediaType)

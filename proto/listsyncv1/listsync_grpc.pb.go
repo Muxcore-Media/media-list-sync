@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.35.1
-// source: proto/listsyncv1/listsync.proto
+// source: listsync.proto
 
 package listsyncv1
 
@@ -383,5 +383,5 @@ var ListSyncService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/listsyncv1/listsync.proto",
+	Metadata: "listsync.proto",
 }

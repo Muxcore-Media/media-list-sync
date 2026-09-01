@@ -163,4 +163,5 @@ message SyncItem {
   string matched_item_id = 13; // ID in library module
   string created_at = 14;
   string updated_at = 15;
+  string musicbrainz_id = 16;
 }

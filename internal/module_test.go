@@ -536,3 +536,78 @@ func TestQueueMovieSearch(t *testing.T) {
 		t.Fatal("timed out waiting for movie search queue")
 	}
 }
+
+func TestAddSourceRejectsUnknownType(t *testing.T) {
+	m := newTestModule(t)
+	_, err := m.AddSource(context.Background(), &listsyncv1.AddSourceRequest{Name: "Bad", Type: "not-a-source"})
+	if err == nil {
+		t.Fatal("expected error for unknown type")
+	}
+}
+
+func TestUpdateSourceEmptyMeansKeepCredentials(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{
+		Name: "Trakt", Type: "trakt", Username: "u1", ClientId: "cid", ListUrl: "watchlist", ApiKey: "secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := m.UpdateSource(ctx, &listsyncv1.UpdateSourceRequest{Id: added.Source.Id, Name: "Trakt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Source.GetUsername() != "u1" || updated.Source.GetClientId() != "cid" || updated.Source.GetListUrl() != "watchlist" {
+		t.Fatalf("credentials cleared: %+v", updated.Source)
+	}
+	if updated.Source.GetApiKey() != "secret" {
+		t.Fatalf("api_key=%q", updated.Source.GetApiKey())
+	}
+
+	listed, _ := m.ListSources(ctx, &listsyncv1.ListSourcesRequest{})
+	if listed.Sources[0].GetApiKey() != "********" {
+		t.Fatalf("expected redacted api_key, got %q", listed.Sources[0].GetApiKey())
+	}
+}
+
+func TestSyncFailureDoesNotAdvanceLastSynced(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{
+		Name: "Trakt", Type: "trakt", ClientId: "cid", ApiKey: "token", SyncIntervalMinutes: 1440,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := added.Source.GetLastSynced()
+	m.syncSource(ctx, added.Source)
+	after := m.loadSource(ctx, added.Source.Id)
+	if after.GetLastSynced() != before {
+		t.Fatalf("last_synced advanced on failure: before=%q after=%q", before, after.GetLastSynced())
+	}
+}
+
+func TestGetItemsMatchedOnlyAndMusicBrainzID(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	srcID := "src_items"
+	items := []syncItem{{
+		ExternalID: "lastfm_1", MusicBrainzID: "mbid-123", MediaType: "music", Title: "Radiohead", Action: "lastfm",
+	}, {
+		ExternalID: "tt1", TMDBID: 1, MediaType: "movie", Title: "Pending",
+	}}
+	m.storeItems(ctx, srcID, items)
+	m.markSyncItemAdded(ctx, srcID, "lastfm_1", "artist_1")
+
+	resp, err := m.GetItems(ctx, &listsyncv1.GetItemsRequest{MatchedOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetTotal() != 1 {
+		t.Fatalf("matched_only total=%d", resp.GetTotal())
+	}
+	if resp.GetItems()[0].GetMusicbrainzId() != "mbid-123" {
+		t.Fatalf("musicbrainz_id=%q", resp.GetItems()[0].GetMusicbrainzId())
+	}
+}

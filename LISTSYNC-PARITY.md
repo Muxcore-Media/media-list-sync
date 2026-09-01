@@ -4,7 +4,7 @@
 
 Legend: `[x]` shipped · `[~]` partial · `[ ]` missing · **Waiver** = accepted MuxCore-native equivalent
 
-**Baseline:** `media-list-sync` **v0.2.3** — native providers plus external Arr import-list sync and Watcharr lists.
+**Baseline:** `media-list-sync` **v0.2.4** — native providers plus external Arr import-list sync, Watcharr, and Last.fm music lists.
 
 ---
 
@@ -17,7 +17,7 @@ Legend: `[x]` shipped · `[~]` partial · `[ ]` missing · **Waiver** = accepted
 | Manual sync all lists | [x] `SyncNow` + admin **Sync now** |
 | Manual sync one list | [x] `SyncNow.source_id` + per-source admin action |
 | Sync history / log | [x] `GetHistory` + `/list-sync/history` |
-| Add new items from list | [x] Ingest via `media-movies` / `media-tvshows` |
+| Add new items from list | [x] Ingest via `media-movies` / `media-tvshows` / `media-music` (Last.fm) |
 | TV missing-episode queue after add | [x] `ListMissing` → `media-automation` (when `search_on_add`) |
 | TMDB resolution fallback | [x] `metadata-tmdb` search when IDs missing |
 | Remove / unmonitor when item leaves list | [x] Per-source `clean_library_level` |
@@ -38,6 +38,7 @@ Legend: `[x]` shipped · `[~]` partial · `[ ]` missing · **Waiver** = accepted
 | Jellyfin favorites / playlist | Yes | `jellyfin` | [x] |
 | Watcharr watched / tag / public lists | Yes | `watcharr` | [x] JWT or username/password; `status:`, `tag:`, `public:` filters |
 | StevenLu / TMDB list / RSS | Yes | `stevenlu`, `tmdb_list`, `rss` | [x] |
+| Last.fm top/chart/tag/loved/library | — | `lastfm` | [x] `user:`, `tag:`, `chart`, `loved:`, `library:`, `period:`, `limit:` |
 | External Radarr import lists | Yes | `radarr_importlist` → `GET /api/v3/importlist/movie` | [x] Optional `list_url` = `list:<id>` filter |
 | External Sonarr import lists | Yes | `sonarr_importlist` → `GET /api/v3/importlist/series` or config proxy | [x] Falls back to reading `/api/v3/importlist` configs when series API missing |
 | External Radarr library mirror | Alternate | `radarr` → monitored `/api/v3/movie` | [x] **Waiver** for full library: `/migrate` |

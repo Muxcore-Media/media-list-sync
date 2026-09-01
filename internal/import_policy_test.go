@@ -73,3 +73,31 @@ func TestMarkSyncItemSkipped(t *testing.T) {
 		t.Fatalf("status=%q", status)
 	}
 }
+
+func TestMusicMonitoredFromSource(t *testing.T) {
+	if musicMonitoredFromSource(&listsyncv1.ListSource{MonitorMode: monitorModeNone}) {
+		t.Fatal("none should be unmonitored")
+	}
+	if !musicMonitoredFromSource(&listsyncv1.ListSource{MonitorMode: monitorModeAll}) {
+		t.Fatal("all should be monitored")
+	}
+}
+
+func TestApplyImportPolicyMusicMonitorHook(t *testing.T) {
+	m := newTestModule(t)
+	var gotID string
+	var gotMon bool
+	m.applyMonitorModeFn = func(_ context.Context, _ *listsyncv1.ListSource, item syncItem, libraryID, mode string) error {
+		if item.MediaType != "music" {
+			t.Fatalf("media=%q", item.MediaType)
+		}
+		gotID = libraryID
+		gotMon = mode != monitorModeNone
+		return nil
+	}
+	src := &listsyncv1.ListSource{MonitorMode: monitorModeNone}
+	m.applyImportPolicy(context.Background(), src, syncItem{MediaType: "music", Title: "Radiohead"}, "artist_1")
+	if gotID != "artist_1" || gotMon {
+		t.Fatalf("id=%q mon=%v", gotID, gotMon)
+	}
+}

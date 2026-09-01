@@ -11,6 +11,7 @@ import (
 	maintainv1 "github.com/Muxcore-Media/media-library-maintainer/proto/maintainv1"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"google.golang.org/grpc"
@@ -123,13 +124,13 @@ func (m *Module) meetsMinimumAvailability(ctx context.Context, source *listsyncv
 
 	switch item.MediaType {
 	case "movie":
-		resp, err := mc.GetMovieDetails(ctx, &metadatav1.GetMovieDetailsRequest{TmdbId: clampInt32FromInt(item.TMDBID)})
+		resp, err := mc.GetMovieDetails(ctx, &metadatav1.GetMovieDetailsRequest{Id: clampInt32FromInt(item.TMDBID)})
 		if err != nil {
 			return true, ""
 		}
 		return movieMeetsAvailability(level, resp.GetReleaseDate(), resp.GetStatus()), "minimum availability"
 	case "tv":
-		resp, err := mc.GetTVDetails(ctx, &metadatav1.GetTVDetailsRequest{TmdbId: clampInt32FromInt(item.TMDBID)})
+		resp, err := mc.GetTVDetails(ctx, &metadatav1.GetTVDetailsRequest{Id: clampInt32FromInt(item.TMDBID)})
 		if err != nil {
 			return true, ""
 		}
@@ -218,6 +219,15 @@ func (m *Module) applyImportTags(ctx context.Context, item syncItem, libraryID, 
 		m.mu.RUnlock()
 		_, err := tc.SetItemTags(ctx, &tvmgmtv1.SetItemTagsRequest{ItemId: libraryID, TagIds: tagIDs})
 		return err
+	case "music":
+		if err := m.ensureMusic(ctx); err != nil {
+			return err
+		}
+		m.mu.RLock()
+		mc := m.musicClient
+		m.mu.RUnlock()
+		_, err := mc.SetItemTags(ctx, &musicv1.SetItemTagsRequest{ItemId: libraryID, TagIds: tagIDs})
+		return err
 	default:
 		return nil
 	}
@@ -239,6 +249,8 @@ func (m *Module) applyMonitorMode(ctx context.Context, source *listsyncv1.ListSo
 			return m.setSeriesMonitored(ctx, libraryID, false)
 		}
 		return m.applyTVFutureMonitor(ctx, libraryID)
+	case "music":
+		return m.setArtistMonitored(ctx, libraryID, mode != monitorModeNone)
 	default:
 		return nil
 	}
@@ -252,6 +264,21 @@ func (m *Module) setMovieMonitored(ctx context.Context, movieID string, monitore
 	mc := m.moviesClient
 	m.mu.RUnlock()
 	_, err := mc.UpdateMovie(ctx, &mgmntv1.UpdateMovieRequest{MovieId: movieID, Monitored: &monitored})
+	return err
+}
+
+func musicMonitoredFromSource(source *listsyncv1.ListSource) bool {
+	return normalizeMonitorMode(source.GetMonitorMode()) != monitorModeNone
+}
+
+func (m *Module) setArtistMonitored(ctx context.Context, artistID string, monitored bool) error {
+	if err := m.ensureMusic(ctx); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	mc := m.musicClient
+	m.mu.RUnlock()
+	_, err := mc.UpdateArtist(ctx, &musicv1.UpdateArtistRequest{Id: artistID, Monitored: &monitored})
 	return err
 }
 

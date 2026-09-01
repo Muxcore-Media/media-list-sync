@@ -99,7 +99,7 @@ func (m *Module) addMusicArtist(ctx context.Context, source *listsyncv1.ListSour
 	resp, err := mc.AddArtist(ctx, &musicv1.AddArtistRequest{
 		Name:             item.Title,
 		MusicbrainzId:    item.MusicBrainzID,
-		Monitored:        true,
+		Monitored:        musicMonitoredFromSource(source),
 		QualityProfileId: source.GetQualityProfileId(),
 		RootFolderPath:   source.GetRootFolderPath(),
 	})

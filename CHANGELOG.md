@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.10] — 2026-09-08
+
+### Added
+- `TestSource` fetches one import list without writing sync history or library items (admin-ui Test and household Settings Test).
+
+## [0.1.9] — 2026-09-08
+
+### Added
+- `SyncNow.source_id` syncs one import list (admin-ui and household Settings per-row Sync). Empty still syncs every enabled source.
+
+## [0.1.8] — 2026-09-08
+
+### Added
+- `UpdateSource` so household Settings can pause or edit an import list without delete-and-re-add.
+
 ## [0.1.7] — 2026-08-10
 
 ### Added

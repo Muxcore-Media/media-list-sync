@@ -5,8 +5,10 @@ option go_package = "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1;l
 service ListSyncService {
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   rpc AddSource(AddSourceRequest) returns (AddSourceResponse);
+  rpc UpdateSource(UpdateSourceRequest) returns (UpdateSourceResponse);
   rpc RemoveSource(RemoveSourceRequest) returns (RemoveSourceResponse);
   rpc SyncNow(SyncNowRequest) returns (SyncNowResponse);
+  rpc TestSource(TestSourceRequest) returns (TestSourceResponse);
   rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
   rpc GetItems(GetItemsRequest) returns (GetItemsResponse);
 }
@@ -47,13 +49,41 @@ message AddSourceRequest {
 
 message AddSourceResponse { ListSource source = 1; }
 
+message UpdateSourceRequest {
+  string id = 1;
+  optional bool enabled = 2;
+  optional string name = 3;
+  optional int32 sync_interval_minutes = 4;
+  optional string quality_profile_id = 5;
+  optional string root_folder_path = 6;
+  optional string list_url = 7;
+  optional string username = 8;
+  optional string client_id = 9;
+  optional string base_url = 10;
+  optional string api_key = 11;
+}
+
+message UpdateSourceResponse { ListSource source = 1; }
+
 message RemoveSourceRequest { string id = 1; }
 message RemoveSourceResponse {}
 
-message SyncNowRequest {}
+message SyncNowRequest {
+  string source_id = 1; // empty = all enabled sources
+}
 message SyncNowResponse {
   int32 items_found = 1;
   int32 items_new = 2;
+}
+
+message TestSourceRequest {
+  string source_id = 1;
+}
+
+message TestSourceResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 items_found = 3;
 }
 
 message GetHistoryRequest {

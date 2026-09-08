@@ -113,7 +113,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.1.7",
+		Version:      "0.1.10",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -483,6 +483,25 @@ func (m *Module) syncAllForced(force bool) (found, newItems int) {
 	return found, newItems
 }
 
+func (m *Module) fetchSourceItems(source *listsyncv1.ListSource) ([]syncItem, error) {
+	switch source.GetType() {
+	case "trakt":
+		return m.fetchTrakt(source)
+	case "imdb":
+		return m.fetchIMDb(source)
+	case "plex":
+		return m.fetchPlex(source)
+	case "jellyfin":
+		return m.fetchJellyfin(source)
+	case "radarr":
+		return m.fetchRadarr(source)
+	case "sonarr":
+		return m.fetchSonarr(source)
+	default:
+		return nil, fmt.Errorf("unknown source type: %s", source.GetType())
+	}
+}
+
 func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int) {
 	logID := fmt.Sprintf("log_%d", time.Now().UnixNano())
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -492,25 +511,7 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 		logID, source.GetId(), source.GetName(), now)
 	m.mu.Unlock()
 
-	var items []syncItem
-	var err error
-
-	switch source.GetType() {
-	case "trakt":
-		items, err = m.fetchTrakt(source)
-	case "imdb":
-		items, err = m.fetchIMDb(source)
-	case "plex":
-		items, err = m.fetchPlex(source)
-	case "jellyfin":
-		items, err = m.fetchJellyfin(source)
-	case "radarr":
-		items, err = m.fetchRadarr(source)
-	case "sonarr":
-		items, err = m.fetchSonarr(source)
-	default:
-		err = fmt.Errorf("unknown source type: %s", source.GetType())
-	}
+	items, err := m.fetchSourceItems(source)
 
 	if err == nil {
 		newCount = m.storeItems(source.GetId(), items)
@@ -964,6 +965,89 @@ func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest
 	return &listsyncv1.AddSourceResponse{Source: m.loadSource(id)}, nil
 }
 
+func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceRequest) (*listsyncv1.UpdateSourceResponse, error) {
+	id := strings.TrimSpace(req.GetId())
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+
+	m.mu.RLock()
+	existing := m.loadSource(id)
+	m.mu.RUnlock()
+	if existing == nil {
+		return nil, fmt.Errorf("source not found")
+	}
+
+	name := existing.GetName()
+	if req.Name != nil {
+		name = strings.TrimSpace(req.GetName())
+		if name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+	}
+	enabled := existing.GetEnabled()
+	if req.Enabled != nil {
+		enabled = req.GetEnabled()
+	}
+	interval := existing.GetSyncIntervalMinutes()
+	if req.SyncIntervalMinutes != nil {
+		interval = req.GetSyncIntervalMinutes()
+		if interval <= 0 {
+			interval = 1440
+		}
+	}
+	qualityID := existing.GetQualityProfileId()
+	if req.QualityProfileId != nil {
+		qualityID = strings.TrimSpace(req.GetQualityProfileId())
+	}
+	listURL := existing.GetListUrl()
+	if req.ListUrl != nil {
+		listURL = strings.TrimSpace(req.GetListUrl())
+	}
+	username := existing.GetUsername()
+	if req.Username != nil {
+		username = strings.TrimSpace(req.GetUsername())
+	}
+	clientID := existing.GetClientId()
+	if req.ClientId != nil {
+		clientID = strings.TrimSpace(req.GetClientId())
+	}
+	baseURL := existing.GetBaseUrl()
+	if req.BaseUrl != nil {
+		baseURL = strings.TrimSpace(req.GetBaseUrl())
+	}
+	apiKey := existing.GetApiKey()
+	if req.ApiKey != nil && strings.TrimSpace(req.GetApiKey()) != "" {
+		apiKey = strings.TrimSpace(req.GetApiKey())
+	}
+	rootPath := existing.GetRootFolderPath()
+	if req.RootFolderPath != nil {
+		resolved, err := m.resolveRootFolderPath(ctx, req.GetRootFolderPath(), "")
+		if err != nil {
+			return nil, err
+		}
+		rootPath = resolved
+	}
+
+	enabledInt := 0
+	if enabled {
+		enabledInt = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.loadSource(id) == nil {
+		return nil, fmt.Errorf("source not found")
+	}
+	_, err := m.db.Exec(`UPDATE list_sources SET name = ?, enabled = ?, username = ?, client_id = ?, list_url = ?, sync_interval_minutes = ?, base_url = ?, api_key = ?, quality_profile_id = ?, root_folder_path = ?, updated_at = ? WHERE id = ?`,
+		name, enabledInt, username, clientID, listURL, interval, baseURL, apiKey, qualityID, rootPath, now, id)
+	if err != nil {
+		return nil, fmt.Errorf("update source: %w", err)
+	}
+	return &listsyncv1.UpdateSourceResponse{Source: m.loadSource(id)}, nil
+}
+
 func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceRequest) (*listsyncv1.RemoveSourceResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -973,8 +1057,42 @@ func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceR
 }
 
 func (m *Module) SyncNow(ctx context.Context, req *listsyncv1.SyncNowRequest) (*listsyncv1.SyncNowResponse, error) {
+	if id := strings.TrimSpace(req.GetSourceId()); id != "" {
+		m.mu.RLock()
+		sources := m.loadSources()
+		m.mu.RUnlock()
+		for _, src := range sources {
+			if src.GetId() == id {
+				found, newItems := m.syncSource(src)
+				return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems)}, nil
+			}
+		}
+		return nil, fmt.Errorf("list source %s not found", id)
+	}
 	found, newItems := m.syncAllForced(true)
 	return &listsyncv1.SyncNowResponse{ItemsFound: int32(found), ItemsNew: int32(newItems)}, nil
+}
+
+func (m *Module) TestSource(ctx context.Context, req *listsyncv1.TestSourceRequest) (*listsyncv1.TestSourceResponse, error) {
+	id := strings.TrimSpace(req.GetSourceId())
+	if id == "" {
+		return &listsyncv1.TestSourceResponse{Ok: false, Message: "source_id required"}, nil
+	}
+	m.mu.RLock()
+	src := m.loadSource(id)
+	m.mu.RUnlock()
+	if src == nil {
+		return &listsyncv1.TestSourceResponse{Ok: false, Message: "list source not found"}, nil
+	}
+	items, err := m.fetchSourceItems(src)
+	if err != nil {
+		return &listsyncv1.TestSourceResponse{Ok: false, Message: err.Error()}, nil
+	}
+	return &listsyncv1.TestSourceResponse{
+		Ok:         true,
+		Message:    fmt.Sprintf("Found %d titles", len(items)),
+		ItemsFound: int32(len(items)),
+	}, nil
 }
 
 func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryRequest) (*listsyncv1.GetHistoryResponse, error) {

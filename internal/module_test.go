@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,33 @@ func TestAddIMDbSource(t *testing.T) {
 	}
 }
 
+func TestUpdateSourceEnabled(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{Name: "Trakt", Type: "trakt", ClientId: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	updated, err := m.UpdateSource(ctx, &listsyncv1.UpdateSourceRequest{Id: added.Source.Id, Enabled: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Source.Enabled {
+		t.Fatal("expected paused source")
+	}
+	on := true
+	name := "Trakt paused"
+	resumed, err := m.UpdateSource(ctx, &listsyncv1.UpdateSourceRequest{Id: added.Source.Id, Enabled: &on, Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resumed.Source.Enabled || resumed.Source.Name != "Trakt paused" {
+		t.Fatalf("resume %#v", resumed.Source)
+	}
+}
+
 func TestRemoveSource(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
@@ -166,6 +194,68 @@ func TestSyncNow(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected response")
+	}
+}
+
+func TestSyncNowOneSource(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	first, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{Name: "Trakt A", Type: "trakt", ClientId: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{Name: "Trakt B", Type: "trakt", ClientId: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncNow(ctx, &listsyncv1.SyncNowRequest{SourceId: first.GetSource().GetId()}); err != nil {
+		t.Fatal(err)
+	}
+	hist, err := m.GetHistory(ctx, &listsyncv1.GetHistoryRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hist.GetTotal() != 1 {
+		t.Fatalf("history=%d want 1", hist.GetTotal())
+	}
+	if hist.GetEntries()[0].GetSourceId() != first.GetSource().GetId() {
+		t.Fatalf("synced %s want %s", hist.GetEntries()[0].GetSourceId(), first.GetSource().GetId())
+	}
+	if hist.GetEntries()[0].GetSourceId() == second.GetSource().GetId() {
+		t.Fatal("second source should not sync")
+	}
+	if _, err := m.SyncNow(ctx, &listsyncv1.SyncNowRequest{SourceId: "missing"}); err == nil {
+		t.Fatal("expected missing source error")
+	}
+}
+
+func TestTestSourceMissingAndUnknown(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	missing, err := m.TestSource(ctx, &listsyncv1.TestSourceRequest{SourceId: "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.GetOk() || missing.GetMessage() == "" {
+		t.Fatalf("%#v", missing)
+	}
+	added, err := m.AddSource(ctx, &listsyncv1.AddSourceRequest{Name: "Broken", Type: "unknown", ClientId: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tested, err := m.TestSource(ctx, &listsyncv1.TestSourceRequest{SourceId: added.GetSource().GetId()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tested.GetOk() || !strings.Contains(tested.GetMessage(), "unknown source type") {
+		t.Fatalf("%#v", tested)
+	}
+	hist, err := m.GetHistory(ctx, &listsyncv1.GetHistoryRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hist.GetTotal() != 0 {
+		t.Fatalf("test must not write sync history, got %d", hist.GetTotal())
 	}
 }
 

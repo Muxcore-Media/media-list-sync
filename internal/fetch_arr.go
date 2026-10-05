@@ -20,6 +20,9 @@ func (m *Module) fetchRadarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 		return nil, fmt.Errorf("radarr api_key not configured for source %s", source.GetName())
 	}
 
+	if err := validateIntegrationURL(baseURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v3/movie", nil)
 	if err != nil {
 		return nil, err
@@ -83,6 +86,9 @@ func (m *Module) fetchSonarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 		return nil, fmt.Errorf("sonarr api_key not configured for source %s", source.GetName())
 	}
 
+	if err := validateIntegrationURL(baseURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v3/series", nil)
 	if err != nil {
 		return nil, err

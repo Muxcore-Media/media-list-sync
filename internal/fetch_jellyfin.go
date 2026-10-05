@@ -22,6 +22,9 @@ func (m *Module) fetchJellyfin(source *listsyncv1.ListSource) ([]syncItem, error
 		return nil, fmt.Errorf("jellyfin api_key not configured for source %s", source.GetName())
 	}
 
+	if err := validateIntegrationURL(baseURL); err != nil {
+		return nil, err
+	}
 	var endpoint string
 	if playlistID := strings.TrimSpace(source.GetListUrl()); playlistID != "" {
 		endpoint = fmt.Sprintf("%s/Playlists/%s/Items?Fields=ProviderIds", baseURL, url.PathEscape(playlistID))

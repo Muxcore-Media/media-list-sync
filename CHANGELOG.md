@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13] - 2026-10-05
+
+
+### Security
+- NFR-SEC-009 / RULE-VAL-2: Radarr/Sonarr/Jellyfin `base_url` is validated on add/update and before each fetch and requests go through a netguard `Integration` client (LAN and loopback allowed; metadata/link-local, non-http(s) schemes blocked; dial-time and redirect checks). Plex/Trakt use a netguard `UserURL` https client. IMDb list URLs (including verbatim `/export` URLs) are pinned to `imdb.com` over https.
+- NFR-SEC-008 / RULE-VAL-1: `root_folder_path` now fails closed: if the registered roots from media-root-folders cannot be determined, the path is refused instead of accepted. Built on sdk/go/module v0.6.6.
+
 ## [0.1.12] - 2026-10-05
 
 ### Changed

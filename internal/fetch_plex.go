@@ -48,7 +48,7 @@ func (m *Module) fetchPlexPage(token, clientID string, start, size int) ([]syncI
 	req.Header.Set("X-Plex-Token", token)
 	req.Header.Set("X-Plex-Client-Identifier", clientID)
 
-	resp, err := m.httpCli.Do(req)
+	resp, err := m.extCli.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("plex watchlist: %w", err)
 	}

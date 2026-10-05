@@ -30,6 +30,7 @@ import (
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	"github.com/Muxcore-Media/core/sdk/go/client"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	"github.com/Muxcore-Media/core/sdk/go/module/netguard"
 	_ "modernc.org/sqlite"
 )
 
@@ -47,7 +48,9 @@ type Module struct {
 	pollInterval time.Duration
 	grpcSrv      *grpc.Server
 	grpcLis      net.Listener
-	httpCli      *http.Client
+	httpCli      *http.Client // admin-configured arr/Jellyfin servers (netguard Integration)
+	extCli       *http.Client // third-party list services: Plex, Trakt (netguard UserURL)
+	imdbCli      *http.Client // IMDb exports, host-pinned (netguard UserURL + AllowedHosts)
 
 	automationConn   *grpc.ClientConn
 	automationClient automationv1.AutomationServiceClient
@@ -106,7 +109,9 @@ func NewModule(cfg Config) *Module {
 		dbPath:       cfg.DBPath,
 		grpcAddr:     cfg.GRPCAddr,
 		pollInterval: cfg.PollInterval,
-		httpCli:      &http.Client{Timeout: 30 * time.Second},
+		httpCli:      netguard.NewClient(netguard.Integration, integrationOpts),
+		extCli:       netguard.NewClient(netguard.UserURL, externalOpts),
+		imdbCli:      netguard.NewClient(netguard.UserURL, imdbOpts),
 	}
 }
 
@@ -946,6 +951,9 @@ func (m *Module) ListSources(ctx context.Context, req *listsyncv1.ListSourcesReq
 }
 
 func (m *Module) AddSource(ctx context.Context, req *listsyncv1.AddSourceRequest) (*listsyncv1.AddSourceResponse, error) {
+	if err := validateSourceURLs(req.GetType(), strings.TrimSpace(req.GetBaseUrl()), strings.TrimSpace(req.GetListUrl())); err != nil {
+		return nil, err
+	}
 	rootPath, err := m.resolveRootFolderPath(ctx, req.GetRootFolderPath(), "")
 	if err != nil {
 		return nil, err
@@ -1026,6 +1034,9 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 	apiKey := existing.GetApiKey()
 	if req.ApiKey != nil && strings.TrimSpace(req.GetApiKey()) != "" {
 		apiKey = strings.TrimSpace(req.GetApiKey())
+	}
+	if err := validateSourceURLs(existing.GetType(), baseURL, listURL); err != nil {
+		return nil, err
 	}
 	rootPath := existing.GetRootFolderPath()
 	if req.RootFolderPath != nil {
@@ -1256,7 +1267,7 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 
 	var items []syncItem
 
-	movies, err := traktGet[traktWatchlistMovie](m.httpCli, clientID, accessToken, "/sync/watchlist/movies")
+	movies, err := traktGet[traktWatchlistMovie](m.extCli, clientID, accessToken, "/sync/watchlist/movies")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist movies: %w", err)
 	}
@@ -1276,7 +1287,7 @@ func (m *Module) fetchTrakt(source *listsyncv1.ListSource) ([]syncItem, error) {
 		})
 	}
 
-	shows, err := traktGet[traktWatchlistShow](m.httpCli, clientID, accessToken, "/sync/watchlist/shows")
+	shows, err := traktGet[traktWatchlistShow](m.extCli, clientID, accessToken, "/sync/watchlist/shows")
 	if err != nil {
 		return nil, fmt.Errorf("trakt watchlist shows: %w", err)
 	}
@@ -1349,7 +1360,10 @@ func (m *Module) fetchIMDb(source *listsyncv1.ListSource) ([]syncItem, error) {
 		listURL = fmt.Sprintf("https://www.imdb.com/list/%s/export", strings.TrimPrefix(u.Path, "/list/"))
 	}
 
-	resp, err := m.httpCli.Get(listURL)
+	if err := validateIMDbURL(listURL); err != nil {
+		return nil, err
+	}
+	resp, err := m.imdbCli.Get(listURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch imdb list: %w", err)
 	}

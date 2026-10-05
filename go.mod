@@ -5,7 +5,7 @@ go 1.26.6
 require (
 	github.com/Muxcore-Media/core/pkg/contracts v0.6.0
 	github.com/Muxcore-Media/core/sdk/go/client v0.6.1
-	github.com/Muxcore-Media/core/sdk/go/module v0.6.4
+	github.com/Muxcore-Media/core/sdk/go/module v0.6.6
 	github.com/Muxcore-Media/media-automation v0.1.46
 	github.com/Muxcore-Media/media-movies v0.1.12
 	github.com/Muxcore-Media/media-root-folders v0.1.8

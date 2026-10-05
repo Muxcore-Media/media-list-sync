@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"testing"
 
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
@@ -115,6 +116,7 @@ func TestParseSonarrSeries(t *testing.T) {
 
 func TestAddSourceWithNewFields(t *testing.T) {
 	m := newTestModule(t)
+	m.rootsListFn = func(context.Context, string) ([]string, error) { return []string{"/movies"}, nil }
 	added, err := m.AddSource(t.Context(), &listsyncv1.AddSourceRequest{
 		Name:             "Radarr Home",
 		Type:             "radarr",

@@ -37,7 +37,8 @@ func (m *Module) resolveRootFolderPath(ctx context.Context, path, mediaKind stri
 		return "", err
 	}
 	if !available {
-		return cleaned, nil
+		// Fail closed (RULE-VAL-1): without the registered roots nothing can be confined.
+		return "", fmt.Errorf("root_folder_path %q cannot be verified: registered roots unavailable", cleaned)
 	}
 	for _, p := range paths {
 		if p == cleaned {

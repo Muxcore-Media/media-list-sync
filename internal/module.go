@@ -113,7 +113,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:      "0.1.10",
+		Version:     "0.1.10",
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
@@ -145,7 +145,7 @@ func (m *Module) Init(ctx context.Context) error {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("enable WAL: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -163,7 +163,7 @@ func (m *Module) Init(ctx context.Context) error {
 			updated_at           TEXT NOT NULL
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create list_sources: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -186,7 +186,7 @@ func (m *Module) Init(ctx context.Context) error {
 			UNIQUE(source_id, external_id)
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create sync_items: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -202,7 +202,7 @@ func (m *Module) Init(ctx context.Context) error {
 			completed_at TEXT
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create sync_log: %w", err)
 	}
 
@@ -221,7 +221,7 @@ func (m *Module) Init(ctx context.Context) error {
 
 	lis, err := net.Listen("tcp", m.grpcAddr)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("listen gRPC: %w", err)
 	}
 	m.grpcLis = lis
@@ -251,26 +251,26 @@ func (m *Module) Stop(ctx context.Context) error {
 		m.grpcSrv.GracefulStop()
 	}
 	if m.automationConn != nil {
-		m.automationConn.Close()
+		_ = m.automationConn.Close()
 	}
 	if m.moviesConn != nil {
-		m.moviesConn.Close()
+		_ = m.moviesConn.Close()
 	}
 	if m.tvConn != nil {
-		m.tvConn.Close()
+		_ = m.tvConn.Close()
 	}
 	if m.metadataConn != nil {
-		m.metadataConn.Close()
+		_ = m.metadataConn.Close()
 	}
 	if m.rootsConn != nil {
 		_ = m.rootsConn.Close()
 	}
 	if m.mc != nil {
-		m.mc.Close()
+		_ = m.mc.Close()
 	}
 	m.mu.Lock()
 	if m.db != nil {
-		m.db.Close()
+		_ = m.db.Close()
 		m.db = nil
 	}
 	m.mu.Unlock()
@@ -507,8 +507,10 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	m.mu.Lock()
-	m.db.Exec(`INSERT INTO sync_log (id, source_id, source_name, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
-		logID, source.GetId(), source.GetName(), now)
+	if _, err := m.db.Exec(`INSERT INTO sync_log (id, source_id, source_name, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
+		logID, source.GetId(), source.GetName(), now); err != nil {
+		slog.Warn("insert sync_log failed", "source", source.GetName(), "error", err)
+	}
 	m.mu.Unlock()
 
 	items, err := m.fetchSourceItems(source)
@@ -528,9 +530,13 @@ func (m *Module) syncSource(source *listsyncv1.ListSource) (found, newCount int)
 	}
 
 	m.mu.Lock()
-	m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, error = ?, completed_at = ? WHERE id = ?`,
-		status, found, newCount, errStr, completed, logID)
-	m.db.Exec(`UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId())
+	if _, err := m.db.Exec(`UPDATE sync_log SET status = ?, items_found = ?, items_new = ?, error = ?, completed_at = ? WHERE id = ?`,
+		status, found, newCount, errStr, completed, logID); err != nil {
+		slog.Warn("update sync_log failed", "source", source.GetName(), "error", err)
+	}
+	if _, err := m.db.Exec(`UPDATE list_sources SET last_synced = ?, updated_at = ? WHERE id = ?`, now, now, source.GetId()); err != nil {
+		slog.Warn("update list_sources failed", "source", source.GetName(), "error", err)
+	}
 	m.mu.Unlock()
 
 	if err == nil && len(items) > 0 {
@@ -724,7 +730,7 @@ func yearFromDate(s string) int {
 		return 0
 	}
 	var y int
-	fmt.Sscanf(s[:4], "%d", &y)
+	_, _ = fmt.Sscanf(s[:4], "%d", &y)
 	return y
 }
 
@@ -1051,8 +1057,12 @@ func (m *Module) UpdateSource(ctx context.Context, req *listsyncv1.UpdateSourceR
 func (m *Module) RemoveSource(ctx context.Context, req *listsyncv1.RemoveSourceRequest) (*listsyncv1.RemoveSourceResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.db.Exec(`DELETE FROM sync_items WHERE source_id = ?`, req.GetId())
-	m.db.Exec(`DELETE FROM list_sources WHERE id = ?`, req.GetId())
+	if _, err := m.db.Exec(`DELETE FROM sync_items WHERE source_id = ?`, req.GetId()); err != nil {
+		return nil, fmt.Errorf("remove source items: %w", err)
+	}
+	if _, err := m.db.Exec(`DELETE FROM list_sources WHERE id = ?`, req.GetId()); err != nil {
+		return nil, fmt.Errorf("remove source: %w", err)
+	}
 	return &listsyncv1.RemoveSourceResponse{}, nil
 }
 
@@ -1110,13 +1120,13 @@ func (m *Module) GetHistory(ctx context.Context, req *listsyncv1.GetHistoryReque
 	offset := (page - 1) * pageSize
 
 	var total int
-	m.db.QueryRow(`SELECT COUNT(*) FROM sync_log`).Scan(&total)
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM sync_log`).Scan(&total)
 
 	rows, err := m.db.Query(`SELECT id, source_id, source_name, status, items_found, items_new, error, started_at, completed_at FROM sync_log ORDER BY started_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*listsyncv1.SyncLogEntry
 	for rows.Next() {
@@ -1173,7 +1183,7 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 	}
 
 	var total int
-	m.db.QueryRow(countQuery, args...).Scan(&total)
+	_ = m.db.QueryRow(countQuery, args...).Scan(&total)
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	qargs := append(args, pageSize, offset)
 
@@ -1181,7 +1191,7 @@ func (m *Module) GetItems(ctx context.Context, req *listsyncv1.GetItemsRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var items []*listsyncv1.SyncItem
 	for rows.Next() {
@@ -1303,7 +1313,7 @@ func traktGet[T any](cli *http.Client, clientID, accessToken, path string) ([]T,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1342,7 +1352,7 @@ func (m *Module) fetchIMDb(source *listsyncv1.ListSource) ([]syncItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch imdb list: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1377,7 +1387,7 @@ func parseIMDbCSV(data string) ([]syncItem, error) {
 
 		if len(fields) > 8 {
 			yearStr := strings.TrimSpace(fields[8])
-			fmt.Sscanf(yearStr, "%d", &year)
+			_, _ = fmt.Sscanf(yearStr, "%d", &year)
 		}
 
 		mediaType := "movie"
@@ -1451,7 +1461,7 @@ func (m *Module) loadSources() []*listsyncv1.ListSource {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sources []*listsyncv1.ListSource
 	for rows.Next() {

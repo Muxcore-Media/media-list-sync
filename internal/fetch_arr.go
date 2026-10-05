@@ -31,7 +31,7 @@ func (m *Module) fetchRadarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 	if err != nil {
 		return nil, fmt.Errorf("radarr fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -94,7 +94,7 @@ func (m *Module) fetchSonarr(source *listsyncv1.ListSource) ([]syncItem, error) 
 	if err != nil {
 		return nil, fmt.Errorf("sonarr fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

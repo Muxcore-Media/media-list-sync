@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.10] - 2026-10-05
+
+### Fixed
+- `RemoveSource` returns database errors instead of reporting success.
+- Failed sync-log writes are logged instead of silently ignored.
+
+### Changed
+- Dependencies resolve from published GitHub tags (core v0.6.2, media-automation v0.1.46); CI on GitHub-hosted runners from the umbrella template.
+
 ## [0.1.10] — 2026-09-08
 
 ### Added

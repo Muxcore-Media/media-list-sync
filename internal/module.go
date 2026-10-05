@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	manifest "github.com/Muxcore-Media/media-list-sync"
 	listsyncv1 "github.com/Muxcore-Media/media-list-sync/proto/listsyncv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	rootsv1 "github.com/Muxcore-Media/media-root-folders/proto/rootsv1"
@@ -113,7 +114,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:          m.id,
 		Name:        "Media List Sync",
-		Version:     "0.1.10",
+		Version:     modulesdk.ManifestVersion(manifest.ManifestJSON),
 		Roles:       []string{"listsync", "importlist"},
 		Description: "Sync media watchlists and collections from Trakt, IMDb, Plex, Jellyfin, Radarr, and Sonarr",
 		Author:      "MuxCore",
